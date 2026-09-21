@@ -12,6 +12,21 @@ curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/i
 
 Pass hook options after `sh -s --`, e.g. `... | sh -s -- --threshold 80`. Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`.
 
+To uninstall, which **keeps your saved accounts** so a reinstall brings rotation straight back:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/uninstall.sh | sh
+```
+
+Add `sh -s -- --purge` to delete the saved accounts too. It exports a backup to `~/cswap-backup-<date>.cswap` first and refuses to delete anything if that backup fails. Your current Claude Code login, Orca's accounts and your other hooks are never touched.
+
+**Back up your accounts.** A deleted account store means logging in to every account again. One file avoids that:
+
+```bash
+cswap export ~/cswap-backup.cswap      # keep it private: it holds credentials
+cswap import ~/cswap-backup.cswap      # restore every account, no logins
+```
+
 ## Test results (real accounts, 2026-09-21)
 
 Everything below was measured on a real setup — 4 Claude Max accounts on macOS (Darwin 25.6, Python 3.12) — not simulated.
