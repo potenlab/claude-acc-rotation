@@ -215,7 +215,11 @@ CSWAP_HOOK_DISABLE=1 claude
 cswap run 2
 ```
 
-**With [Orca](https://orca.computer):** Orca's worktrees and embedded terminals run ordinary Claude Code sessions, so by default they rotate along with everything else. If you'd rather keep them on one account — useful when several worktrees share one long-running task — install the hook with `--skip-path ~/orca` (or wherever your Orca worktrees live), or export `CSWAP_HOOK_DISABLE=1` in the environment Orca launches terminals from. Either way the accounts stay managed: `cswap list`, `cswap switch` and the dashboard keep working, only the automatic per-prompt switching is off there.
+**With [Orca](https://orca.computer):** Orca's worktrees and embedded terminals run ordinary Claude Code sessions against your default `~/.claude` (verified: Orca doesn't set `CLAUDE_CONFIG_DIR` for terminal panes), so they read the same `settings.json` and **rotate automatically along with everything else** — no extra setup.
+
+One thing to know: Orca is an account switcher too. Its account menu writes the same system login cswap does (`~/.claude/.credentials.json`, the `Claude Code-credentials` Keychain item, and `oauthAccount` in `~/.claude.json`). If you switch accounts from Orca's menu, that overrides cswap's last switch until the next prompt rotates again, and Orca's "active" label can lag behind the account actually in use. Pick one switcher: let cswap rotate, and leave Orca's account menu alone.
+
+Orca-launched sessions rotate by default. If you'd rather keep them on one account — useful when several worktrees share one long-running task — install the hook with `--skip-path ~/orca` (or wherever your Orca worktrees live), or export `CSWAP_HOOK_DISABLE=1` in the environment Orca launches terminals from. Either way the accounts stay managed: `cswap list`, `cswap switch` and the dashboard keep working, only the automatic per-prompt switching is off there.
 
 To turn rotation off everywhere, remove the hook entirely:
 
