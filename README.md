@@ -196,6 +196,15 @@ cswap hook install --rotate=best             # always jump to the most quota lef
 cswap hook install --rotate=plain            # rotate blindly, ignoring usage
 ```
 
+Accounts near their limit are **held out until they reset**, then used again. By default `--rotate` skips any account with less than 5% of its 5h or 7d window left, so a rotation never lands on one that would run dry on the next message. Tune it with `--reserve`:
+
+```bash
+cswap hook install --rotate --reserve 10     # hold accounts back at 90% used
+cswap hook install --rotate --reserve 0      # only skip accounts fully at 100%
+```
+
+If every other account is held out, the hook stays on the current one and says so (`cswap: All other accounts are at their 5h/7d limit (keeping 5% in reserve) — staying on Account-1.`) rather than failing silently.
+
 This spreads a shared pool of accounts evenly and never lets one account carry a whole session. The cost is that each switch rebuilds the conversation cache on the next message, which uses extra quota — with long conversations, threshold mode (the default) is cheaper.
 
 - In threshold mode the hook deliberately does **not** rotate on every single prompt. Each switch rebuilds the conversation cache, which uses extra quota, so it only moves when the active account nears its limit (or, with `--strategy consume-first`, when a sooner-resetting account is available).

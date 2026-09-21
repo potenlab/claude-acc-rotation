@@ -22,6 +22,7 @@ def _args(**overrides) -> argparse.Namespace:
         rotate=None,
         skip_path=[],
         sync_orca=False,
+        reserve=prompt_hook.DEFAULT_RESERVE,
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
         quiet=False,
         dry_run=False,
@@ -245,9 +246,31 @@ class TestRotateMode(TestRunHook):
         )
         engine.tick.assert_not_called()
         switcher.switch.assert_called_once_with(
-            strategy="next-available", json_output=True
+            strategy="next-available", json_output=True, reserve=5.0
         )
         assert "Account-2" in json.loads(capsys.readouterr().out)["systemMessage"]
+
+    def test_rotate_passes_custom_reserve(self, backup_dir):
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0, reserve=15.0),
+            switch_result={"switched": True, "message": "Switched to Account-3 (c@e)"},
+        )
+        switcher.switch.assert_called_once_with(
+            strategy="next-available", json_output=True, reserve=15.0
+        )
+
+    def test_all_accounts_exhausted_is_reported(self, backup_dir, capsys):
+        result = {
+            "switched": False,
+            "reason": "candidates-exhausted",
+            "message": "All other accounts are at their 5h/7d limit — staying on Account-1.",
+        }
+        self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0),
+            switch_result=result,
+        )
+        msg = json.loads(capsys.readouterr().out)["systemMessage"]
+        assert "staying on Account-1" in msg
 
     def test_rotate_plain_passes_no_strategy(self, backup_dir):
         _, _, switcher = self._run(
@@ -294,6 +317,17 @@ class TestMinIntervalDefaults:
     def test_rotate_forwards_without_redundant_min_interval(self):
         opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=0))
         assert opts == ["--rotate=best"]
+
+    def test_default_reserve_is_not_forwarded(self):
+        assert prompt_hook._forwarded_options(_args(rotate="next-available", min_interval=0)) == [
+            "--rotate=next-available"
+        ]
+
+    def test_custom_reserve_is_forwarded(self):
+        opts = prompt_hook._forwarded_options(
+            _args(rotate="next-available", min_interval=0, reserve=10.0)
+        )
+        assert opts == ["--rotate=next-available", "--reserve=10"]
 
     def test_explicit_min_interval_is_forwarded(self):
         opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=5.0))

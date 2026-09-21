@@ -5810,6 +5810,7 @@ class ClaudeAccountSwitcher:
         json_output: bool = False,
         models: tuple[str, ...] = (),
         model_source: str | None = None,
+        reserve: float = 0.0,
     ) -> dict | None:
         """Switch to next account in sequence.
 
@@ -5819,6 +5820,12 @@ class ClaudeAccountSwitcher:
                   of advancing the rotation; ``"next-available"`` rotates to the
                   next account, skipping any currently at its 5h/7d limit. ``None``
                   (the default) performs a plain rotation.
+            reserve: Headroom percentage a ``next-available`` candidate must
+                  still have to be eligible. The default 0 skips only accounts
+                  at or over a limit; a positive value also holds back one
+                  that is nearly there (``--reserve 5`` skips anything with
+                  under 5% left), so a rotation doesn't land on an account
+                  that hits its limit on the next message.
             models: Per-model weekly windows folded into every usage
                   comparison of the usage-aware strategies (parsed display
                   names, or the ``all`` sentinel — see
@@ -6101,7 +6108,7 @@ class ClaudeAccountSwitcher:
                 continue
             if strategy == "next-available":
                 headroom = oauth.account_headroom(usage.get(candidate), models)
-                if headroom is not None and headroom <= 0:
+                if headroom is not None and headroom <= reserve:
                     skipped_exhausted.append(candidate)
                     label = "5h/7d"
                     if models:
@@ -6116,12 +6123,16 @@ class ClaudeAccountSwitcher:
                         ]
                         if at:
                             label = "/".join(at)
+                    at_limit = headroom <= 0
+                    where = (
+                        f"at {label} limit"
+                        if at_limit
+                        else f"near {label} limit, {headroom:.0f}% left"
+                    )
                     if json_output:
-                        warnings.append(
-                            f"Skipped Account-{candidate} (at {label} limit)"
-                        )
+                        warnings.append(f"Skipped Account-{candidate} ({where})")
                     else:
-                        print(f"{accent('Skipping')} Account-{candidate} (at {label} limit)")
+                        print(f"{accent('Skipping')} Account-{candidate} ({where})")
                     continue
             next_account = candidate
             break
@@ -6132,6 +6143,8 @@ class ClaudeAccountSwitcher:
             # With model limits in play the binding window may be a scoped
             # one (the per-skip lines name it), so don't claim "5h/7d".
             limits_label = "usage limits" if models else "5h/7d limit"
+            if reserve > 0:
+                limits_label += f" (keeping {reserve:g}% in reserve)"
             if json_output:
                 return self._switch_noop(
                     strategy=strategy_label, reason="candidates-exhausted",

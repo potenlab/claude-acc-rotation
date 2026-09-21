@@ -5841,6 +5841,68 @@ class TestUsageAwareSwitch:
         assert "Skipping Account-2 (at 5h/7d limit)" in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
+    def test_reserve_skips_nearly_exhausted_account(self, temp_home: Path, capsys):
+        """--reserve holds back an account that is close to (not at) its limit."""
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._seed(s, 3, "c@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        usage = {"1": self._usage(0), "2": self._usage(97), "3": self._usage(20)}
+        with patch.object(s, "_usage_by_account", return_value=usage), \
+             patch.object(s, "list_accounts"):
+            s.switch(strategy="next-available", reserve=5.0)
+
+        out = capsys.readouterr().out
+        assert "Skipping Account-2 (near 5h/7d limit, 3% left)" in out
+        assert s._get_sequence_data()["activeAccountNumber"] == 3
+
+    def test_zero_reserve_still_uses_nearly_exhausted_account(self, temp_home: Path):
+        """Default behaviour is unchanged: only 100% counts as exhausted."""
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        usage = {"1": self._usage(0), "2": self._usage(97)}
+        with patch.object(s, "_usage_by_account", return_value=usage), \
+             patch.object(s, "list_accounts"):
+            s.switch(strategy="next-available")
+
+        assert s._get_sequence_data()["activeAccountNumber"] == 2
+
+    def test_reserve_all_held_back_stays_put(self, temp_home: Path):
+        """Every other account inside the reserve: stay, and say why."""
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._seed(s, 3, "c@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        usage = {"1": self._usage(40), "2": self._usage(96), "3": self._usage(100)}
+        with patch.object(s, "_usage_by_account", return_value=usage):
+            result = s.switch(strategy="next-available", json_output=True, reserve=5.0)
+
+        assert result["switched"] is False
+        assert result["reason"] == "candidates-exhausted"
+        assert "keeping 5% in reserve" in result["message"]
+        assert s._get_sequence_data()["activeAccountNumber"] == 1
+
+    def test_reserve_account_returns_after_reset(self, temp_home: Path):
+        """A held-back account is eligible again once its window resets."""
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        reset = {"1": self._usage(10), "2": self._usage(0)}
+        with patch.object(s, "_usage_by_account", return_value=reset), \
+             patch.object(s, "list_accounts"):
+            s.switch(strategy="next-available", reserve=5.0)
+
+        assert s._get_sequence_data()["activeAccountNumber"] == 2
+
     @staticmethod
     def _model_usage(five_h: float, fable: float) -> dict:
         return {

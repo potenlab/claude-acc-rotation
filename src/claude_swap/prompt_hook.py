@@ -34,6 +34,9 @@ from claude_swap import paths
 HOOK_EVENT = "UserPromptSubmit"
 HOOK_TIMEOUT_SECONDS = 30
 DEFAULT_MIN_INTERVAL = 20.0
+# --rotate never lands on an account with less than this much quota left: one
+# at 98% would hit its limit on the very next message.
+DEFAULT_RESERVE = 5.0
 STAMP_FILENAME = "prompt_hook_last_run"
 _MANAGEMENT_ACTIONS = {"install", "uninstall", "status"}
 # Identifies a hook entry we installed, in either launcher form:
@@ -145,19 +148,29 @@ def _system_message(events: list) -> str | None:
     return None
 
 
-def _rotate(switcher, strategy: str) -> str | None:
-    """Rotate to another account regardless of usage; return a message or None.
+def _rotate(switcher, strategy: str, reserve: float = DEFAULT_RESERVE) -> str | None:
+    """Rotate to another account on every prompt; return a message or None.
 
-    ``--rotate`` mode: every prompt moves to the next account (``next-available``
-    skips any at their 5h/7d limit, ``best`` jumps to the most quota left, ``plain``
-    ignores usage entirely) instead of waiting for a threshold.
+    ``next-available`` skips any account within ``reserve`` % of a 5h/7d limit
+    — held out until its window resets, then used again — ``best`` jumps to the
+    most quota left, and ``plain`` ignores usage entirely.
     """
-    result = switcher.switch(
-        strategy=None if strategy == "plain" else strategy, json_output=True
-    )
-    if not result or not result.get("switched"):
+    if strategy == "next-available":
+        result = switcher.switch(
+            strategy=strategy, json_output=True, reserve=reserve
+        )
+    else:
+        result = switcher.switch(
+            strategy=None if strategy == "plain" else strategy, json_output=True
+        )
+    if not result:
         return None
-    return f"cswap: {result.get('message', 'switched account')}"
+    if result.get("switched"):
+        return f"cswap: {result.get('message', 'switched account')}"
+    if result.get("reason") == "candidates-exhausted":
+        # Every other account is held out; say so instead of failing silently.
+        return f"cswap: {result.get('message', 'all other accounts are at their limit')}"
+    return None
 
 
 def run_hook(args: argparse.Namespace) -> int:
@@ -182,7 +195,7 @@ def run_hook(args: argparse.Namespace) -> int:
             message = (
                 f"cswap: [dry-run] would rotate ({args.rotate})"
                 if args.dry_run
-                else _rotate(switcher, args.rotate)
+                else _rotate(switcher, args.rotate, args.reserve)
             )
         else:
             events: list = []
@@ -382,6 +395,17 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--reserve",
+        type=float,
+        default=DEFAULT_RESERVE,
+        metavar="PCT",
+        help=(
+            "With --rotate: skip any account with less than this much quota "
+            f"left until its window resets (default {DEFAULT_RESERVE:g}; 0 = only "
+            "skip accounts fully at their limit)"
+        ),
+    )
+    parser.add_argument(
         "--min-interval",
         type=float,
         default=None,
@@ -424,6 +448,8 @@ def _forwarded_options(args: argparse.Namespace) -> list[str]:
             out.append(shlex.quote(f"{flag}={_format_value(value)}"))
     if args.min_interval != _default_min_interval(args):
         out.append(f"--min-interval={_format_value(args.min_interval)}")
+    if args.rotate and args.reserve != DEFAULT_RESERVE:
+        out.append(f"--reserve={_format_value(args.reserve)}")
     if args.sync_orca:
         out.append("--sync-orca")
     for path in args.skip_path:
