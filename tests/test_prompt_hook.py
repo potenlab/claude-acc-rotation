@@ -19,6 +19,7 @@ def _args(**overrides) -> argparse.Namespace:
         strategy=None,
         model=None,
         cooldown=None,
+        rotate=None,
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
         quiet=False,
         dry_run=False,
@@ -164,8 +165,9 @@ class TestRunHook:
     def backup_dir(self, tmp_path: Path) -> Path:
         return tmp_path / "backup"
 
-    def _run(self, backup_dir: Path, events: list, args=None, env=None):
+    def _run(self, backup_dir: Path, events: list, args=None, env=None, switch_result=None):
         switcher = MagicMock()
+        switcher.switch.return_value = switch_result
         switcher.backup_dir = backup_dir
         engine = MagicMock()
 
@@ -178,17 +180,17 @@ class TestRunHook:
              patch.dict("os.environ", env or {}, clear=False), \
              patch.object(prompt_hook, "_drain_stdin"):
             code = prompt_hook.run_hook(args or _args())
-        return code, engine
+        return code, engine, switcher
 
     def test_switch_is_reported_as_system_message(self, backup_dir, capsys):
-        code, engine = self._run(backup_dir, [_switch_event()])
+        code, engine, _ = self._run(backup_dir, [_switch_event()])
         assert code == 0
         engine.tick.assert_called_once()
         out = json.loads(capsys.readouterr().out)
         assert "Account-2" in out["systemMessage"]
 
     def test_no_switch_prints_nothing(self, backup_dir, capsys):
-        code, _ = self._run(backup_dir, [NoSwitchEvent(reason="below-threshold")])
+        code, _, _ = self._run(backup_dir, [NoSwitchEvent(reason="below-threshold")])
         assert code == 0
         assert capsys.readouterr().out == ""
 
@@ -201,20 +203,20 @@ class TestRunHook:
         assert capsys.readouterr().out == ""
 
     def test_throttled_second_prompt_skips_tick(self, backup_dir):
-        _, first = self._run(backup_dir, [])
-        _, second = self._run(backup_dir, [])
+        _, first, _ = self._run(backup_dir, [])
+        _, second, _ = self._run(backup_dir, [])
         first.tick.assert_called_once()
         second.tick.assert_not_called()
 
     def test_min_interval_zero_never_throttles(self, backup_dir):
         self._run(backup_dir, [], args=_args(min_interval=0))
-        _, second = self._run(backup_dir, [], args=_args(min_interval=0))
+        _, second, _ = self._run(backup_dir, [], args=_args(min_interval=0))
         second.tick.assert_called_once()
 
     def test_skips_inside_session_profile(self, backup_dir):
         session = backup_dir / "sessions" / "2"
         session.mkdir(parents=True)
-        _, engine = self._run(backup_dir, [], env={"CLAUDE_CONFIG_DIR": str(session)})
+        _, engine, _ = self._run(backup_dir, [], env={"CLAUDE_CONFIG_DIR": str(session)})
         engine.tick.assert_not_called()
 
     def test_engine_crash_still_exits_zero(self, backup_dir, capsys):
@@ -225,6 +227,75 @@ class TestRunHook:
              patch.object(prompt_hook, "_drain_stdin"):
             assert prompt_hook.run_hook(_args()) == 0
         assert capsys.readouterr().out == ""
+
+
+class TestRotateMode(TestRunHook):
+    """--rotate: switch on every prompt, no threshold."""
+
+    def test_rotate_switches_and_reports(self, backup_dir, capsys):
+        result = {
+            "switched": True,
+            "message": "Switched to Account-2 (b@example.com)",
+        }
+        _, engine, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0),
+            switch_result=result,
+        )
+        engine.tick.assert_not_called()
+        switcher.switch.assert_called_once_with(
+            strategy="next-available", json_output=True
+        )
+        assert "Account-2" in json.loads(capsys.readouterr().out)["systemMessage"]
+
+    def test_rotate_plain_passes_no_strategy(self, backup_dir):
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="plain", min_interval=0),
+            switch_result={"switched": True, "message": "Switched to Account-2 (b@e)"},
+        )
+        switcher.switch.assert_called_once_with(strategy=None, json_output=True)
+
+    def test_rotate_noop_prints_nothing(self, backup_dir, capsys):
+        self._run(
+            backup_dir, [], args=_args(rotate="best", min_interval=0),
+            switch_result={"switched": False, "message": "Already on Account-1"},
+        )
+        assert capsys.readouterr().out == ""
+
+    def test_rotate_dry_run_never_switches(self, backup_dir, capsys):
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="best", min_interval=0, dry_run=True),
+        )
+        switcher.switch.assert_not_called()
+        assert "would rotate" in json.loads(capsys.readouterr().out)["systemMessage"]
+
+    def test_rotate_failure_still_exits_zero(self, backup_dir, capsys):
+        switcher = MagicMock()
+        switcher.backup_dir = backup_dir
+        switcher.switch.side_effect = RuntimeError("locked")
+        with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
+             patch.object(prompt_hook, "_drain_stdin"):
+            assert prompt_hook.run_hook(_args(rotate="best", min_interval=0)) == 0
+        assert capsys.readouterr().out == ""
+
+
+class TestMinIntervalDefaults:
+    def test_rotate_defaults_to_no_throttle(self):
+        args = _args(rotate="next-available", min_interval=None)
+        prompt_hook._resolve_min_interval(args)
+        assert args.min_interval == 0
+
+    def test_tick_mode_keeps_default_throttle(self):
+        args = _args(min_interval=None)
+        prompt_hook._resolve_min_interval(args)
+        assert args.min_interval == prompt_hook.DEFAULT_MIN_INTERVAL
+
+    def test_rotate_forwards_without_redundant_min_interval(self):
+        opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=0))
+        assert opts == ["--rotate=best"]
+
+    def test_explicit_min_interval_is_forwarded(self):
+        opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=5.0))
+        assert opts == ["--rotate=best", "--min-interval=5"]
 
 
 def test_bad_flag_on_run_path_does_not_block_prompt():

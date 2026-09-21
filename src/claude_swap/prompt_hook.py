@@ -94,8 +94,23 @@ def _system_message(events: list) -> str | None:
     return None
 
 
+def _rotate(switcher, strategy: str) -> str | None:
+    """Rotate to another account regardless of usage; return a message or None.
+
+    ``--rotate`` mode: every prompt moves to the next account (``next-available``
+    skips any at their 5h/7d limit, ``best`` jumps to the most quota left, ``plain``
+    ignores usage entirely) instead of waiting for a threshold.
+    """
+    result = switcher.switch(
+        strategy=None if strategy == "plain" else strategy, json_output=True
+    )
+    if not result or not result.get("switched"):
+        return None
+    return f"cswap: {result.get('message', 'switched account')}"
+
+
 def run_hook(args: argparse.Namespace) -> int:
-    """Run one throttled auto-switch tick for a submitted prompt."""
+    """Run one throttled switch for a submitted prompt (tick, or --rotate)."""
     _drain_stdin()
     try:
         from claude_swap.autoswitch import AutoSwitchEngine
@@ -110,13 +125,20 @@ def run_hook(args: argparse.Namespace) -> int:
         ):
             return 0
 
-        events: list = []
-        settings = merged_with_cli(load_settings(switcher.backup_dir), args)
-        engine = AutoSwitchEngine(
-            switcher, settings, events.append, dry_run=args.dry_run
-        )
-        engine.tick()
-        message = _system_message(events)
+        if args.rotate:
+            message = (
+                f"cswap: [dry-run] would rotate ({args.rotate})"
+                if args.dry_run
+                else _rotate(switcher, args.rotate)
+            )
+        else:
+            events: list = []
+            settings = merged_with_cli(load_settings(switcher.backup_dir), args)
+            engine = AutoSwitchEngine(
+                switcher, settings, events.append, dry_run=args.dry_run
+            )
+            engine.tick()
+            message = _system_message(events)
         if message and not args.quiet:
             print(json.dumps({"systemMessage": message}), flush=True)
     except Exception as e:  # never break the user's prompt
@@ -271,12 +293,38 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
         help="Minimum time between proactive switches (default: autoswitch.cooldown)",
     )
     parser.add_argument(
+        "--rotate",
+        nargs="?",
+        const="next-available",
+        choices=("next-available", "best", "plain"),
+        default=None,
+        help=(
+            "Switch on EVERY prompt instead of waiting for a usage threshold: "
+            "'next-available' rotates but skips accounts at their limit "
+            "(default), 'best' takes the most quota left, 'plain' rotates "
+            "blindly. Implies --min-interval 0"
+        ),
+    )
+    parser.add_argument(
         "--min-interval",
         type=float,
-        default=DEFAULT_MIN_INTERVAL,
+        default=None,
         metavar="SECONDS",
-        help=f"Skip the check if one ran less than this long ago (default {DEFAULT_MIN_INTERVAL:.0f})",
+        help=(
+            "Skip the check if one ran less than this long ago "
+            f"(default {DEFAULT_MIN_INTERVAL:.0f}, or 0 with --rotate)"
+        ),
     )
+
+
+def _default_min_interval(args: argparse.Namespace) -> float:
+    """Rotate-every-prompt means exactly that: no throttle unless asked for."""
+    return 0.0 if args.rotate else DEFAULT_MIN_INTERVAL
+
+
+def _resolve_min_interval(args: argparse.Namespace) -> None:
+    if args.min_interval is None:
+        args.min_interval = _default_min_interval(args)
 
 
 def _format_value(value: object) -> str:
@@ -293,11 +341,12 @@ def _forwarded_options(args: argparse.Namespace) -> list[str]:
         ("--strategy", args.strategy),
         ("--model", args.model),
         ("--cooldown", args.cooldown),
+        ("--rotate", args.rotate),
     ):
         if value is not None:
             # `--flag=value` so a value starting with "-" can't be misparsed.
             out.append(shlex.quote(f"{flag}={_format_value(value)}"))
-    if args.min_interval != DEFAULT_MIN_INTERVAL:
+    if args.min_interval != _default_min_interval(args):
         out.append(f"--min-interval={_format_value(args.min_interval)}")
     if args.quiet:
         out.append("--quiet")
@@ -347,6 +396,7 @@ Examples:
             sys.exit(0)
         raise
 
+    _resolve_min_interval(args)
     if args.action == "run":
         sys.exit(run_hook(args))
 

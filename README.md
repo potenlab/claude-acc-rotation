@@ -141,7 +141,19 @@ cswap hook uninstall                    # remove it (other hooks are left alone)
 - It runs at most once every 20 seconds (`--min-interval`), however many sessions are open. Usage is still read on the adaptive schedule described in [How it works](#how-it-works), so most prompts cost no API call.
 - It skips `cswap run` sessions, because those are pinned to one account.
 - The switch applies to your next request. On macOS, Claude Code caches Keychain credentials for about 30 seconds (see [Tips](#tips)).
-- It deliberately does **not** rotate on every single prompt. Each switch rebuilds the conversation cache, which uses extra quota, so it only moves when the active account nears its limit (or, with `--strategy consume-first`, when a sooner-resetting account is available).
+#### Rotate on every prompt
+
+To move to another account on *every* prompt instead of waiting for a threshold:
+
+```bash
+cswap hook install --rotate                  # rotate, skipping accounts at their limit
+cswap hook install --rotate=best             # always jump to the most quota left
+cswap hook install --rotate=plain            # rotate blindly, ignoring usage
+```
+
+This spreads a shared pool of accounts evenly and never lets one account carry a whole session. The cost is that each switch rebuilds the conversation cache on the next message, which uses extra quota — with long conversations, threshold mode (the default) is cheaper.
+
+- In threshold mode the hook deliberately does **not** rotate on every single prompt. Each switch rebuilds the conversation cache, which uses extra quota, so it only moves when the active account nears its limit (or, with `--strategy consume-first`, when a sooner-resetting account is available).
 
 ### Run multiple accounts at the same time (session mode)
 
