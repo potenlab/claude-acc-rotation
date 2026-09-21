@@ -20,6 +20,7 @@ def _args(**overrides) -> argparse.Namespace:
         model=None,
         cooldown=None,
         rotate=None,
+        skip_path=[],
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
         quiet=False,
         dry_run=False,
@@ -165,7 +166,7 @@ class TestRunHook:
     def backup_dir(self, tmp_path: Path) -> Path:
         return tmp_path / "backup"
 
-    def _run(self, backup_dir: Path, events: list, args=None, env=None, switch_result=None):
+    def _run(self, backup_dir: Path, events: list, args=None, env=None, switch_result=None, payload=None):
         switcher = MagicMock()
         switcher.switch.return_value = switch_result
         switcher.backup_dir = backup_dir
@@ -178,7 +179,7 @@ class TestRunHook:
         with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
              patch("claude_swap.autoswitch.AutoSwitchEngine", side_effect=fake_engine), \
              patch.dict("os.environ", env or {}, clear=False), \
-             patch.object(prompt_hook, "_drain_stdin"):
+             patch.object(prompt_hook, "_read_payload", return_value=payload or {}):
             code = prompt_hook.run_hook(args or _args())
         return code, engine, switcher
 
@@ -224,7 +225,7 @@ class TestRunHook:
         switcher.backup_dir = backup_dir
         with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
              patch("claude_swap.autoswitch.AutoSwitchEngine", side_effect=RuntimeError("boom")), \
-             patch.object(prompt_hook, "_drain_stdin"):
+             patch.object(prompt_hook, "_read_payload", return_value={}):
             assert prompt_hook.run_hook(_args()) == 0
         assert capsys.readouterr().out == ""
 
@@ -273,7 +274,7 @@ class TestRotateMode(TestRunHook):
         switcher.backup_dir = backup_dir
         switcher.switch.side_effect = RuntimeError("locked")
         with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
-             patch.object(prompt_hook, "_drain_stdin"):
+             patch.object(prompt_hook, "_read_payload", return_value={}):
             assert prompt_hook.run_hook(_args(rotate="best", min_interval=0)) == 0
         assert capsys.readouterr().out == ""
 
@@ -296,6 +297,63 @@ class TestMinIntervalDefaults:
     def test_explicit_min_interval_is_forwarded(self):
         opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=5.0))
         assert opts == ["--rotate=best", "--min-interval=5"]
+
+
+class TestOptOut(TestRunHook):
+    """Ways a launcher (Orca, CI, a pinned shell) opts out of rotation."""
+
+    def test_env_kill_switch_skips_everything(self, backup_dir):
+        _, engine, switcher = self._run(
+            backup_dir, [], args=_args(rotate="best", min_interval=0),
+            env={"CSWAP_HOOK_DISABLE": "1"},
+        )
+        engine.tick.assert_not_called()
+        switcher.switch.assert_not_called()
+
+    @pytest.mark.parametrize("value", ["0", "", "no"])
+    def test_env_other_values_do_not_disable(self, backup_dir, value):
+        _, engine, _ = self._run(
+            backup_dir, [], args=_args(min_interval=0),
+            env={"CSWAP_HOOK_DISABLE": value},
+        )
+        engine.tick.assert_called_once()
+
+    def test_skip_path_matches_subdirectory(self, backup_dir, tmp_path):
+        orca = tmp_path / "orca"
+        (orca / "workspaces" / "app").mkdir(parents=True)
+        _, engine, _ = self._run(
+            backup_dir, [], args=_args(min_interval=0, skip_path=[str(orca)]),
+            payload={"cwd": str(orca / "workspaces" / "app")},
+        )
+        engine.tick.assert_not_called()
+
+    def test_skip_path_leaves_other_dirs_alone(self, backup_dir, tmp_path):
+        (tmp_path / "orca").mkdir()
+        (tmp_path / "work").mkdir()
+        _, engine, _ = self._run(
+            backup_dir, [], args=_args(min_interval=0, skip_path=[str(tmp_path / "orca")]),
+            payload={"cwd": str(tmp_path / "work")},
+        )
+        engine.tick.assert_called_once()
+
+    def test_malformed_payload_is_ignored(self, backup_dir):
+        _, engine, _ = self._run(
+            backup_dir, [], args=_args(min_interval=0, skip_path=["~/orca"]),
+            payload={"cwd": None},
+        )
+        engine.tick.assert_called_once()
+
+    def test_skip_path_is_forwarded(self):
+        opts = prompt_hook._forwarded_options(_args(skip_path=["~/orca", "/tmp/x"]))
+        # ~ is quoted: the hook expands it itself, so the shell must not.
+        assert opts == ["'--skip-path=~/orca'", "--skip-path=/tmp/x"]
+
+
+def test_read_payload_survives_garbage(monkeypatch):
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert prompt_hook._read_payload() == {}
 
 
 def test_bad_flag_on_run_path_does_not_block_prompt():

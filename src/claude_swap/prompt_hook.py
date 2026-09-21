@@ -46,13 +46,48 @@ _OUR_COMMAND = re.compile(
 # -- hook entry point ---------------------------------------------------------
 
 
-def _drain_stdin() -> None:
-    """Consume the hook's JSON payload so Claude Code never blocks writing it."""
+def _read_payload() -> dict:
+    """Read the hook's JSON payload (always, so Claude Code never blocks writing it)."""
     try:
-        if not sys.stdin.isatty():
-            sys.stdin.read()
+        if sys.stdin.isatty():
+            return {}
+        raw = sys.stdin.read()
     except (OSError, ValueError):
-        pass
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _disabled_by_env() -> bool:
+    """``CSWAP_HOOK_DISABLE=1`` in a terminal's environment turns the hook off.
+
+    Lets one launcher (Orca, a CI runner, a pinned shell) opt out of rotation
+    while the same user-level hook keeps running everywhere else.
+    """
+    return os.environ.get("CSWAP_HOOK_DISABLE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _under_skip_path(cwd: str | None, skip_paths: list[str]) -> bool:
+    """True when the prompt came from a directory the user excluded."""
+    if not cwd or not skip_paths:
+        return False
+    try:
+        here = Path(cwd).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    for raw in skip_paths:
+        try:
+            skip = Path(raw).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        if here == skip or skip in here.parents:
+            return True
+    return False
 
 
 def _in_session_profile(backup_dir: Path) -> bool:
@@ -111,7 +146,9 @@ def _rotate(switcher, strategy: str) -> str | None:
 
 def run_hook(args: argparse.Namespace) -> int:
     """Run one throttled switch for a submitted prompt (tick, or --rotate)."""
-    _drain_stdin()
+    payload = _read_payload()
+    if _disabled_by_env() or _under_skip_path(payload.get("cwd"), args.skip_path):
+        return 0
     try:
         from claude_swap.autoswitch import AutoSwitchEngine
         from claude_swap.settings import load_settings, merged_with_cli
@@ -293,6 +330,17 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
         help="Minimum time between proactive switches (default: autoswitch.cooldown)",
     )
     parser.add_argument(
+        "--skip-path",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "Never switch for prompts sent from this directory or below it "
+            "(repeatable). Also honoured: CSWAP_HOOK_DISABLE=1 in the "
+            "environment of a terminal that should stay on one account"
+        ),
+    )
+    parser.add_argument(
         "--rotate",
         nargs="?",
         const="next-available",
@@ -348,6 +396,8 @@ def _forwarded_options(args: argparse.Namespace) -> list[str]:
             out.append(shlex.quote(f"{flag}={_format_value(value)}"))
     if args.min_interval != _default_min_interval(args):
         out.append(f"--min-interval={_format_value(args.min_interval)}")
+    for path in args.skip_path:
+        out.append(shlex.quote(f"--skip-path={path}"))
     if args.quiet:
         out.append("--quiet")
     return out

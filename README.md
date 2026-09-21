@@ -200,6 +200,31 @@ This spreads a shared pool of accounts evenly and never lets one account carry a
 
 - In threshold mode the hook deliberately does **not** rotate on every single prompt. Each switch rebuilds the conversation cache, which uses extra quota, so it only moves when the active account nears its limit (or, with `--strategy consume-first`, when a sooner-resetting account is available).
 
+#### Turning rotation off for some sessions (Orca, CI, a pinned terminal)
+
+The hook lives in your user `settings.json`, so it applies to every Claude Code session on the machine. Three ways to exempt some of them, from narrowest to widest:
+
+```bash
+# 1. By directory — prompts from here (and below) never switch accounts
+cswap hook install --rotate --skip-path ~/orca          # repeatable
+
+# 2. By terminal — set this in the environment that launches Claude Code
+CSWAP_HOOK_DISABLE=1 claude
+
+# 3. By session — pin one account; the hook always skips `cswap run` sessions
+cswap run 2
+```
+
+**With [Orca](https://orca.computer):** Orca's worktrees and embedded terminals run ordinary Claude Code sessions, so by default they rotate along with everything else. If you'd rather keep them on one account — useful when several worktrees share one long-running task — install the hook with `--skip-path ~/orca` (or wherever your Orca worktrees live), or export `CSWAP_HOOK_DISABLE=1` in the environment Orca launches terminals from. Either way the accounts stay managed: `cswap list`, `cswap switch` and the dashboard keep working, only the automatic per-prompt switching is off there.
+
+To turn rotation off everywhere, remove the hook entirely:
+
+```bash
+cswap hook uninstall        # accounts and usage tracking stay; only the hook goes
+```
+
+And to hold one account out of rotation without touching the hook, use `cswap disable <num|email>`.
+
 ### Run multiple accounts at the same time (session mode)
 
 Launch Claude Code as a specific account in the current terminal only — every other terminal and the VS Code extension stay on your default account, so two accounts can work in parallel.
