@@ -172,13 +172,14 @@ def cli_should_probe(argv: list[str], *, colors_enabled: bool) -> bool:
     """Whether the CLI should probe the terminal background before dispatch.
 
     False when colors are off (nothing will render the theme anyway), when
-    the first token is ``run`` (execs a child that takes over the terminal),
+    the first token is ``run`` (execs a child that takes over the terminal)
+    or ``hook`` (runs inside Claude Code, whose stdout it must not touch),
     or when ``--json`` is present (the OSC query must never precede
     machine-readable output on stdout).
     """
     if not colors_enabled:
         return False
-    if argv and argv[0] == "run":
+    if argv and argv[0] in ("run", "hook"):
         return False
     if "--json" in argv:
         return False

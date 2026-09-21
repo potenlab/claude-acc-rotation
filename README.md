@@ -2,6 +2,16 @@
 
 Multi-account switcher for Claude Code. Easily switch between multiple Claude accounts without logging out, or let it switch for you before you hit a rate limit. Track usage for every account in a live dashboard, and run accounts in parallel. Works with both the Claude Code CLI and the VS Code extension.
 
+## Quick install (account rotation on every prompt)
+
+One command installs cswap, turns on the [per-prompt hook](#check-on-every-prompt-claude-code-hook), and adds the Claude account you're logged into (macOS / Linux):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/install.sh | sh
+```
+
+Pass hook options after `sh -s --`, e.g. `... | sh -s -- --threshold 80`. Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`.
+
 ## Installation
 
 ### Using uv (recommended)
@@ -115,6 +125,23 @@ For cron/systemd timers, `--once` reports the outcome in its exit code (`0` swit
 Defaults like the threshold and cooldown are configurable with `cswap config set autoswitch.threshold 80` — flags override them (see [Configuration](#configuration)).
 
 </details>
+
+### Check on every prompt (Claude Code hook)
+
+Instead of keeping `cswap auto` running, let Claude Code trigger the check itself: every prompt you submit runs one auto-switch tick, the same decision as `cswap auto --once`. This works well for a pool of accounts shared by a team, since each machine rotates on its own whenever someone sends a prompt.
+
+```bash
+cswap hook install                      # add a UserPromptSubmit hook to ~/.claude/settings.json
+cswap hook install --threshold 80       # switch earlier (other flags: --strategy, --model, --cooldown)
+cswap hook status                       # show the installed command
+cswap hook uninstall                    # remove it (other hooks are left alone)
+```
+
+- The hook never blocks or breaks a prompt: it always exits 0, and nothing it prints reaches the model. When it does switch, Claude Code shows a one-line `cswap: Switched Account-1 -> Account-2 ...` notice.
+- It runs at most once every 20 seconds (`--min-interval`), however many sessions are open. Usage is still read on the adaptive schedule described in [How it works](#how-it-works), so most prompts cost no API call.
+- It skips `cswap run` sessions, because those are pinned to one account.
+- The switch applies to your next request. On macOS, Claude Code caches Keychain credentials for about 30 seconds (see [Tips](#tips)).
+- It deliberately does **not** rotate on every single prompt. Each switch rebuilds the conversation cache, which uses extra quota, so it only moves when the active account nears its limit (or, with `--strategy consume-first`, when a sooner-resetting account is available).
 
 ### Run multiple accounts at the same time (session mode)
 
