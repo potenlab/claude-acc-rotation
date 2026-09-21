@@ -148,6 +148,23 @@ def _system_message(events: list) -> str | None:
     return None
 
 
+def _reserve(args: argparse.Namespace, switcher) -> float:
+    """The flag if given, else ``hook.reserve`` — read fresh on every run.
+
+    An already-open Claude Code session keeps the command line it captured at
+    startup, so the settings file is the only way to change its behaviour
+    without a restart.
+    """
+    if args.reserve is not None:
+        return args.reserve
+    try:
+        from claude_swap.settings import load_hook_settings
+
+        return load_hook_settings(switcher.backup_dir).reserve
+    except Exception:
+        return DEFAULT_RESERVE
+
+
 def _rotate(switcher, strategy: str, reserve: float = DEFAULT_RESERVE) -> str | None:
     """Rotate to another account on every prompt; return a message or None.
 
@@ -195,7 +212,7 @@ def run_hook(args: argparse.Namespace) -> int:
             message = (
                 f"cswap: [dry-run] would rotate ({args.rotate})"
                 if args.dry_run
-                else _rotate(switcher, args.rotate, args.reserve)
+                else _rotate(switcher, args.rotate, _reserve(args, switcher))
             )
         else:
             events: list = []
@@ -397,12 +414,13 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--reserve",
         type=float,
-        default=DEFAULT_RESERVE,
+        default=None,
         metavar="PCT",
         help=(
             "With --rotate: skip any account with less than this much quota "
-            f"left until its window resets (default {DEFAULT_RESERVE:g}; 0 = only "
-            "skip accounts fully at their limit)"
+            f"left until its window resets (default: hook.reserve, or "
+            f"{DEFAULT_RESERVE:g}). Set it with 'cswap config set hook.reserve 15' "
+            "to change already-open sessions too"
         ),
     )
     parser.add_argument(
@@ -448,7 +466,7 @@ def _forwarded_options(args: argparse.Namespace) -> list[str]:
             out.append(shlex.quote(f"{flag}={_format_value(value)}"))
     if args.min_interval != _default_min_interval(args):
         out.append(f"--min-interval={_format_value(args.min_interval)}")
-    if args.rotate and args.reserve != DEFAULT_RESERVE:
+    if args.rotate and args.reserve is not None:
         out.append(f"--reserve={_format_value(args.reserve)}")
     if args.sync_orca:
         out.append("--sync-orca")

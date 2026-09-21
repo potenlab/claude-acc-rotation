@@ -12,6 +12,7 @@ import pytest
 
 from claude_swap.exceptions import ConfigError
 from claude_swap.settings import (
+    HookSettings,
     SETTING_SPECS,
     atomic_write_json,
     AutoSwitchSettings,
@@ -165,7 +166,7 @@ class TestSettingSpecs:
         }
 
     def test_defaults_match_dataclass(self):
-        sources = {"autoswitch": AutoSwitchSettings(), "ui": UiSettings()}
+        sources = {"autoswitch": AutoSwitchSettings(), "hook": HookSettings(), "ui": UiSettings()}
         for spec in SETTING_SPECS.values():
             assert spec.default == getattr(sources[spec.section], spec.field)
 

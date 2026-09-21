@@ -22,7 +22,7 @@ def _args(**overrides) -> argparse.Namespace:
         rotate=None,
         skip_path=[],
         sync_orca=False,
-        reserve=prompt_hook.DEFAULT_RESERVE,
+        reserve=None,
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
         quiet=False,
         dry_run=False,
@@ -318,7 +318,9 @@ class TestMinIntervalDefaults:
         opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=0))
         assert opts == ["--rotate=best"]
 
-    def test_default_reserve_is_not_forwarded(self):
+    def test_unset_reserve_is_not_forwarded(self):
+        """No flag -> the installed command stays free of it, so hook.reserve
+        (read at every run) governs already-open sessions too."""
         assert prompt_hook._forwarded_options(_args(rotate="next-available", min_interval=0)) == [
             "--rotate=next-available"
         ]
@@ -389,6 +391,47 @@ def test_read_payload_survives_garbage(monkeypatch):
 
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert prompt_hook._read_payload() == {}
+
+
+class TestReserveFromSettings(TestRunHook):
+    """hook.reserve is read at every run, so an already-open Claude Code
+    session (which captured its command line at startup) follows it."""
+
+    def _write_setting(self, backup_dir: Path, value) -> None:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        (backup_dir / "settings.json").write_text(json.dumps({"hook": {"reserve": value}}))
+
+    def test_settings_value_is_used_when_flag_absent(self, backup_dir):
+        self._write_setting(backup_dir, 15)
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0),
+            switch_result={"switched": False},
+        )
+        assert switcher.switch.call_args.kwargs["reserve"] == 15.0
+
+    def test_flag_beats_the_setting(self, backup_dir):
+        self._write_setting(backup_dir, 15)
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0, reserve=3.0),
+            switch_result={"switched": False},
+        )
+        assert switcher.switch.call_args.kwargs["reserve"] == 3.0
+
+    def test_missing_settings_file_falls_back_to_default(self, backup_dir):
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0),
+            switch_result={"switched": False},
+        )
+        assert switcher.switch.call_args.kwargs["reserve"] == prompt_hook.DEFAULT_RESERVE
+
+    def test_corrupt_settings_file_falls_back_to_default(self, backup_dir):
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        (backup_dir / "settings.json").write_text("{not json")
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0),
+            switch_result={"switched": False},
+        )
+        assert switcher.switch.call_args.kwargs["reserve"] == prompt_hook.DEFAULT_RESERVE
 
 
 class TestOrcaSync(TestRunHook):

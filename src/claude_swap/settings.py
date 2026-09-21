@@ -60,6 +60,22 @@ class AutoSwitchSettings:
 
 
 @dataclass(frozen=True)
+class HookSettings:
+    """Policy knobs for the per-prompt hook (``cswap hook``).
+
+    Read at every hook run rather than baked into the installed command, so a
+    change takes effect in Claude Code sessions that are ALREADY OPEN — they
+    captured the command line at startup and never see a reinstall.
+
+    ``reserve`` is the headroom a rotation candidate must still have: 5 skips
+    only accounts essentially at a limit, 15 also holds back one that would
+    run dry within a few messages. A flag on the command line wins over it.
+    """
+
+    reserve: float = 5.0
+
+
+@dataclass(frozen=True)
 class UiSettings:
     """Appearance preferences (``ui`` section). ``theme`` selects the TUI/CLI
     color theme; ``auto`` follows terminal-background detection."""
@@ -67,7 +83,11 @@ class UiSettings:
     theme: str = "auto"
 
 
-_SECTION_DEFAULT_SOURCES = {"autoswitch": AutoSwitchSettings, "ui": UiSettings}
+_SECTION_DEFAULT_SOURCES = {
+    "autoswitch": AutoSwitchSettings,
+    "hook": HookSettings,
+    "ui": UiSettings,
+}
 
 
 @dataclass(frozen=True)
@@ -134,6 +154,10 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "autoswitch", "model", "model", "string",
             help="Also switch on these models' weekly limits (e.g. Fable, Fable,Opus, or all)",
+        ),
+        SettingSpec(
+            "hook", "reserve", "reserve", "float", 0.0, 50.0,
+            help="Quota a --rotate candidate must still have left, in pct",
         ),
         SettingSpec(
             "ui", "theme", "theme", "choice", choices=("dark", "light", "auto"),
@@ -229,6 +253,21 @@ def load_settings(backup_root: Path) -> AutoSwitchSettings:
     except TypeError:
         settings = AutoSwitchSettings()
     return _clamped(settings)
+
+
+def load_hook_settings(backup_root: Path) -> HookSettings:
+    """Load the hook section; missing/corrupt file or fields → defaults."""
+    section = _read_raw(settings_path(backup_root)).get("hook")
+    if not isinstance(section, dict):
+        return HookSettings()
+    try:
+        settings = HookSettings(
+            **{k: section[k] for k in ("reserve",) if k in section}
+        )
+    except TypeError:
+        return HookSettings()
+    reserve = min(max(float(settings.reserve), 0.0), 50.0)
+    return dataclasses.replace(settings, reserve=reserve)
 
 
 def load_ui_settings(backup_root: Path) -> UiSettings:
@@ -411,6 +450,7 @@ def effective_settings(backup_root: Path) -> list[tuple[SettingSpec, object, boo
     raw = _read_raw(settings_path(backup_root))
     loaded = {
         "autoswitch": load_settings(backup_root),
+        "hook": load_hook_settings(backup_root),
         "ui": load_ui_settings(backup_root),
     }
     rows = []
