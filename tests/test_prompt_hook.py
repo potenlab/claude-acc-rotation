@@ -21,6 +21,7 @@ def _args(**overrides) -> argparse.Namespace:
         cooldown=None,
         rotate=None,
         skip_path=[],
+        sync_orca=False,
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
         quiet=False,
         dry_run=False,
@@ -354,6 +355,49 @@ def test_read_payload_survives_garbage(monkeypatch):
 
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert prompt_hook._read_payload() == {}
+
+
+class TestOrcaSync(TestRunHook):
+    def test_sync_runs_after_a_switch(self, backup_dir, capsys):
+        switcher = MagicMock()
+        switcher.backup_dir = backup_dir
+        switcher._get_current_account.return_value = ("b@example.com", "org")
+        switcher.switch.return_value = {"switched": True, "message": "Switched to Account-2 (b@example.com)"}
+        with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
+             patch("claude_swap.orca.sync_active_account", return_value="Orca now follows b@example.com") as sync, \
+             patch.object(prompt_hook, "_read_payload", return_value={}):
+            prompt_hook.run_hook(_args(rotate="best", min_interval=0, sync_orca=True))
+        sync.assert_called_once_with("b@example.com")
+        assert "Orca now follows" in json.loads(capsys.readouterr().out)["systemMessage"]
+
+    def test_no_sync_without_the_flag(self, backup_dir):
+        with patch("claude_swap.orca.sync_active_account") as sync:
+            self._run(
+                backup_dir, [], args=_args(rotate="best", min_interval=0),
+                switch_result={"switched": True, "message": "Switched to Account-2 (b@e)"},
+            )
+        sync.assert_not_called()
+
+    def test_no_sync_when_nothing_switched(self, backup_dir):
+        with patch("claude_swap.orca.sync_active_account") as sync:
+            self._run(
+                backup_dir, [NoSwitchEvent(reason="below-threshold")],
+                args=_args(min_interval=0, sync_orca=True),
+            )
+        sync.assert_not_called()
+
+    def test_sync_failure_never_breaks_the_message(self, backup_dir, capsys):
+        switcher = MagicMock()
+        switcher.backup_dir = backup_dir
+        switcher._get_current_account.side_effect = RuntimeError("no login")
+        switcher.switch.return_value = {"switched": True, "message": "Switched to Account-2 (b@e)"}
+        with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
+             patch.object(prompt_hook, "_read_payload", return_value={}):
+            assert prompt_hook.run_hook(_args(rotate="best", min_interval=0, sync_orca=True)) == 0
+        assert "Account-2" in json.loads(capsys.readouterr().out)["systemMessage"]
+
+    def test_sync_orca_is_forwarded(self):
+        assert prompt_hook._forwarded_options(_args(sync_orca=True)) == ["--sync-orca"]
 
 
 def test_bad_flag_on_run_path_does_not_block_prompt():

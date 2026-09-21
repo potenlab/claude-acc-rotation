@@ -217,6 +217,16 @@ cswap run 2
 
 **With [Orca](https://orca.computer):** Orca's worktrees and embedded terminals run ordinary Claude Code sessions against your default `~/.claude` (verified: Orca doesn't set `CLAUDE_CONFIG_DIR` for terminal panes), so they read the same `settings.json` and **rotate automatically along with everything else** — no extra setup.
 
+**Keep Orca in step — `--sync-orca`.** Orca is an account switcher too, and it re-asserts its own choice on every Claude pane launch, on window focus, and on a usage poll every ~15 minutes, which silently undoes a cswap switch. Install the hook with `--sync-orca` and cswap tells Orca which account it just moved to, so both agree:
+
+```bash
+cswap hook install --rotate --sync-orca
+```
+
+The notice then reads `cswap: Switched to Account-1 (you@example.com) · Orca now follows you@example.com`.
+
+This talks to Orca's local runtime socket (`accounts.selectClaude`), which is **undocumented** — an Orca update could change or remove it. It fails soft in every case: Orca closed, an account Orca doesn't manage, a switch already running, or a changed API all just skip the sync and leave your cswap switch in place. Without the flag nothing contacts Orca at all.
+
 One thing to know: Orca is an account switcher too. Its account menu writes the same system login cswap does (`~/.claude/.credentials.json`, the `Claude Code-credentials` Keychain item, and `oauthAccount` in `~/.claude.json`). If you switch accounts from Orca's menu, that overrides cswap's last switch until the next prompt rotates again, and Orca's "active" label can lag behind the account actually in use. Pick one switcher: let cswap rotate, and leave Orca's account menu alone.
 
 Orca-launched sessions rotate by default. If you'd rather keep them on one account — useful when several worktrees share one long-running task — install the hook with `--skip-path ~/orca` (or wherever your Orca worktrees live), or export `CSWAP_HOOK_DISABLE=1` in the environment Orca launches terminals from. Either way the accounts stay managed: `cswap list`, `cswap switch` and the dashboard keep working, only the automatic per-prompt switching is off there.

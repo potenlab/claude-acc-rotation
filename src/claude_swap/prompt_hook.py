@@ -118,6 +118,22 @@ def _throttled(stamp: Path, min_interval: float, now: float) -> bool:
     return False
 
 
+def _sync_orca(args: argparse.Namespace, switcher) -> str | None:
+    """Tell Orca which account is active now, so it stops reverting the switch."""
+    if not args.sync_orca:
+        return None
+    try:
+        from claude_swap import orca
+
+        identity = switcher._get_current_account()
+    except Exception:
+        return None
+    if not identity:
+        return None
+    email = identity[0]
+    return orca.sync_active_account(email)
+
+
 def _system_message(events: list) -> str | None:
     """Summarize the tick's events into one user-facing line, or None."""
     for event in events:
@@ -176,6 +192,10 @@ def run_hook(args: argparse.Namespace) -> int:
             )
             engine.tick()
             message = _system_message(events)
+        if message:
+            note = _sync_orca(args, switcher)
+            if note:
+                message = f"{message} · {note}"
         if message and not args.quiet:
             print(json.dumps({"systemMessage": message}), flush=True)
     except Exception as e:  # never break the user's prompt
@@ -330,6 +350,14 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
         help="Minimum time between proactive switches (default: autoswitch.cooldown)",
     )
     parser.add_argument(
+        "--sync-orca",
+        action="store_true",
+        help=(
+            "After a switch, point the Orca app at the same account so it "
+            "doesn't revert the login on its next pane launch or usage poll"
+        ),
+    )
+    parser.add_argument(
         "--skip-path",
         action="append",
         default=[],
@@ -396,6 +424,8 @@ def _forwarded_options(args: argparse.Namespace) -> list[str]:
             out.append(shlex.quote(f"{flag}={_format_value(value)}"))
     if args.min_interval != _default_min_interval(args):
         out.append(f"--min-interval={_format_value(args.min_interval)}")
+    if args.sync_orca:
+        out.append("--sync-orca")
     for path in args.skip_path:
         out.append(shlex.quote(f"--skip-path={path}"))
     if args.quiet:
