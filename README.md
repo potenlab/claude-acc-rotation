@@ -12,6 +12,51 @@ curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/i
 
 Pass hook options after `sh -s --`, e.g. `... | sh -s -- --threshold 80`. Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`.
 
+## Test results (real accounts, 2026-09-21)
+
+Everything below was measured on a real setup — 4 Claude Max accounts on macOS (Darwin 25.6, Python 3.12) — not simulated.
+
+**Rotation across accounts.** Three prompts in a row, each line a real credential swap:
+
+| Prompt | Active account before | After | Note |
+|---|---|---|---|
+| 1 | 4 · treesoop.dion@ | **1** · daehyeonnam@ | |
+| 2 | 1 · daehyeonnam@ | **2** · dev@potenlab.dev | |
+| 3 | 2 · dev@potenlab.dev | **4** · treesoop.dion@ | account 3 skipped: 7d window at 100% |
+
+Account 3 was at its weekly limit and was skipped on every pass, so no prompt ever landed on an exhausted account.
+
+**Threshold mode picks the right target.** With the active account at 77% of its 7-day window and a threshold of 70%, the engine reported:
+
+```
+Account-4 (treesoop.dion@): 77% used (switch at 70%) | others: #1: 5h 26% · 7d 11%,
+#2: 5h 37% · 7d 57%, #3: 5h 0% · 7d 100%
+→ would switch Account-4 -> Account-1 (daehyeonnam@)
+```
+
+It chose account 1 (the most quota left) and rejected account 3 (exhausted).
+
+**Speed.** Time added to a prompt, measured with `/usr/bin/time`:
+
+| Hook mode | Wall time |
+|---|---|
+| `--rotate` (a real account switch) | 0.43 – 0.45 s |
+| threshold check, no switch needed | 0.55 s (1.11 s on the first, cold run) |
+
+In threshold mode the check is also throttled to once per 20 s, so most prompts pay nothing at all.
+
+**Safety.** Verified by hand and covered by tests:
+
+- `settings.json` keeps its other keys and its `0600` permissions when the hook is installed or removed; other hooks are left untouched.
+- Re-running `hook install` replaces the entry instead of stacking duplicates.
+- The hook exits 0 on a crash, a network failure, or a stale flag — a `UserPromptSubmit` hook that exits 2 would erase your prompt, so this path is tested explicitly.
+- Nothing the hook prints reaches the model; a switch is reported as a `systemMessage` that only you see.
+- `cswap run` sessions are left alone, since they're pinned to one account.
+
+**Test suite:** 2309 passed, 4 skipped (`uv run pytest`), including 42 tests for the hook itself.
+
+**Known limits, measured too:** on macOS, Claude Code caches Keychain credentials for ~30 s, so a prompt sent within that window may still run on the previous account — the rotation stays correct, it just lags. And every switch makes the next message rebuild its conversation cache, which costs extra tokens; on long conversations, threshold mode is the cheaper choice.
+
 ## Installation
 
 ### Using uv (recommended)
