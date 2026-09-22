@@ -42,6 +42,16 @@ from claude_swap.json_output import (
     usage_fields,
     usage_freshness_fields,
 )
+
+# Usage sentinels that mean switching onto the account cannot work: its next
+# request would fail however much quota it has left. next-available rotation
+# skips these (an unreadable-but-healthy account still reads as "unknown" and
+# is kept, since that is usually a transient fetch failure).
+_UNUSABLE_USAGE = {
+    USAGE_RELOGIN_REQUIRED: "re-login needed",
+    USAGE_NO_CREDENTIALS: "no stored credentials",
+    USAGE_FOREIGN_CREDENTIAL: "stored credential belongs to another account",
+}
 from claude_swap.credentials import (  # noqa: F401  (constants re-exported for migrations/tests)
     CLAUDE_CODE_KEYCHAIN_SERVICE,
     SECURITY_SERVICE,
@@ -6086,6 +6096,7 @@ class ClaudeAccountSwitcher:
 
         next_account: str | None = None
         skipped_exhausted: list[str] = []
+        skipped_dead: list[str] = []
         for offset in range(1, len(sequence)):
             candidate = str(sequence[(current_index + offset) % len(sequence)])
             if self._disabled_from_data(data, candidate):
@@ -6105,6 +6116,23 @@ class ClaudeAccountSwitcher:
                         f"(no stored credentials/config, re-add with "
                         f"cswap --add-account --slot {candidate})"
                     )
+                continue
+            candidate_usage = usage.get(candidate)
+            if (
+                strategy == "next-available"
+                and isinstance(candidate_usage, str)
+                and candidate_usage in _UNUSABLE_USAGE
+            ):
+                # A dead refresh token reports no usage windows, which reads as
+                # "unknown headroom" below and is never skipped — so without
+                # this the rotation lands on an account whose next request is a
+                # 401 "OAuth access token has been revoked".
+                skipped_dead.append(candidate)
+                reason = _UNUSABLE_USAGE[candidate_usage]
+                if json_output:
+                    warnings.append(f"Skipped Account-{candidate} ({reason})")
+                else:
+                    print(f"{accent('Skipping')} Account-{candidate} ({reason})")
                 continue
             if strategy == "next-available":
                 headroom = oauth.account_headroom(usage.get(candidate), models)
@@ -6158,6 +6186,20 @@ class ClaudeAccountSwitcher:
                 f"All other accounts are at their {limits_label} — staying on "
                 f"Account-{current_num}."
             )
+            return None
+
+        if next_account is None and skipped_dead:
+            names = ", ".join(f"Account-{n}" for n in skipped_dead)
+            message = (
+                f"{names} need a re-login (log in with Claude Code, then "
+                f"cswap add) — staying on Account-{current_num}."
+            )
+            if json_output:
+                return self._switch_noop(
+                    strategy=strategy_label, reason="relogin-required",
+                    to_ref=current_ref, warnings=warnings, message=message,
+                )
+            warning(message)
             return None
 
         if next_account is None:

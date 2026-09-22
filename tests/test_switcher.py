@@ -5841,6 +5841,54 @@ class TestUsageAwareSwitch:
         assert "Skipping Account-2 (at 5h/7d limit)" in out
         assert s._get_sequence_data()["activeAccountNumber"] == 3
 
+    def test_next_available_skips_dead_refresh_token(self, temp_home: Path, capsys):
+        """A re-login-needed account is skipped, not treated as unknown usage."""
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._seed(s, 3, "c@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        usage = {"1": self._usage(10), "2": USAGE_RELOGIN_REQUIRED, "3": self._usage(20)}
+        with patch.object(s, "_usage_by_account", return_value=usage), \
+             patch.object(s, "list_accounts"):
+            s.switch(strategy="next-available")
+
+        assert "Skipping Account-2 (re-login needed)" in capsys.readouterr().out
+        assert s._get_sequence_data()["activeAccountNumber"] == 3
+
+    def test_next_available_all_others_dead_stays_and_says_why(self, temp_home: Path):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        usage = {"1": self._usage(10), "2": USAGE_RELOGIN_REQUIRED}
+        with patch.object(s, "_usage_by_account", return_value=usage):
+            result = s.switch(strategy="next-available", json_output=True)
+
+        assert result["switched"] is False
+        assert result["reason"] == "relogin-required"
+        assert "Account-2 need a re-login" in result["message"]
+        assert s._get_sequence_data()["activeAccountNumber"] == 1
+
+    def test_next_available_unknown_usage_is_still_used(self, temp_home: Path):
+        """Transient fetch failure (None) keeps the old behaviour: not skipped."""
+        s = self._setup(temp_home)
+        self._seed(s, 1, "a@example.com")
+        self._seed(s, 2, "b@example.com")
+        self._make_live(temp_home, "a@example.com", 1)
+
+        with patch.object(s, "_usage_by_account", return_value={"1": self._usage(10), "2": None}), \
+             patch.object(s, "list_accounts"):
+            s.switch(strategy="next-available")
+
+        assert s._get_sequence_data()["activeAccountNumber"] == 2
+
     def test_reserve_skips_nearly_exhausted_account(self, temp_home: Path, capsys):
         """--reserve holds back an account that is close to (not at) its limit."""
         s = self._setup(temp_home)

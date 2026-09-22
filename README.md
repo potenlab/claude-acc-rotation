@@ -218,6 +218,8 @@ cswap hook install --rotate --reserve 10     # hold accounts back at 90% used
 cswap hook install --rotate --reserve 0      # only skip accounts fully at 100%
 ```
 
+Accounts whose saved refresh token is dead are skipped too — switching onto one would only produce a 401 — and the hook names them so you know which to log in again. After you `/login` with such an account, the next prompt saves the new login automatically; no `cswap add` needed.
+
 If every other account is held out, the hook stays on the current one and says so (`cswap: All other accounts are at their 5h/7d limit (keeping 5% in reserve) — staying on Account-1.`) rather than failing silently.
 
 This spreads a shared pool of accounts evenly and never lets one account carry a whole session. The cost is that each switch rebuilds the conversation cache on the next message, which uses extra quota — with long conversations, threshold mode (the default) is cheaper.
@@ -241,17 +243,15 @@ cswap run 2
 
 **With [Orca](https://orca.computer):** Orca's worktrees and embedded terminals run ordinary Claude Code sessions against your default `~/.claude` (verified: Orca doesn't set `CLAUDE_CONFIG_DIR` for terminal panes), so they read the same `settings.json` and **rotate automatically along with everything else** — no extra setup.
 
-**Keep Orca in step — `--sync-orca`.** Orca is an account switcher too, and it re-asserts its own choice on every Claude pane launch, on window focus, and on a usage poll every ~15 minutes, which silently undoes a cswap switch. Install the hook with `--sync-orca` and cswap tells Orca which account it just moved to, so both agree:
+**Keep Orca off the login — `--detach-orca`.** Orca is an account switcher too: it writes the same login cswap does, and re-asserts its own pick on every Claude pane launch, on window focus, and on a usage poll every ~15 minutes. With two tools writing one login, each restores refresh tokens the other has already rotated, the server revokes them, and the next request fails with `401 OAuth access token has been revoked` until that account is logged in again. The fix is a single writer:
 
 ```bash
-cswap hook install --rotate --sync-orca
+cswap orca status       # is Orca managing the Claude login?
+cswap orca detach       # stop it; Orca's terminals keep working
+cswap hook install --rotate --detach-orca   # and re-detach it on every prompt
 ```
 
-The notice then reads `cswap: Switched to Account-1 (you@example.com) · Orca now follows you@example.com`.
-
-This talks to Orca's local runtime socket (`accounts.selectClaude`), which is **undocumented** — an Orca update could change or remove it. It fails soft in every case: Orca closed, an account Orca doesn't manage, a switch already running, or a changed API all just skip the sync and leave your cswap switch in place. Without the flag nothing contacts Orca at all.
-
-One thing to know: Orca is an account switcher too. Its account menu writes the same system login cswap does (`~/.claude/.credentials.json`, the `Claude Code-credentials` Keychain item, and `oauthAccount` in `~/.claude.json`). If you switch accounts from Orca's menu, that overrides cswap's last switch until the next prompt rotates again, and Orca's "active" label can lag behind the account actually in use. Pick one switcher: let cswap rotate, and leave Orca's account menu alone.
+Detaching is Orca's own "system default" setting: it keeps its account list, but stops overwriting the login. With `--detach-orca` the hook re-detaches it on the next prompt if someone picks an account in Orca's menu. This uses Orca's local runtime socket (`accounts.selectClaude`), which is **undocumented** — an Orca update could change it, and every failure is a silent skip. (`--sync-orca`, the earlier flag that pointed Orca at cswap's account, turned out to keep both tools writing; it now behaves as `--detach-orca`.)
 
 Orca-launched sessions rotate by default. If you'd rather keep them on one account — useful when several worktrees share one long-running task — install the hook with `--skip-path ~/orca` (or wherever your Orca worktrees live), or export `CSWAP_HOOK_DISABLE=1` in the environment Orca launches terminals from. Either way the accounts stay managed: `cswap list`, `cswap switch` and the dashboard keep working, only the automatic per-prompt switching is off there.
 

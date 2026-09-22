@@ -75,7 +75,7 @@ class FakeRuntime:
         if self.fail == "id":
             return {"id": "wrong-id", "ok": True, "result": {}}
         if request["method"] == "accounts.selectClaude":
-            self.active = request["params"]["accountId"]
+            self.active = request["params"]["accountId"]  # None = system default
         payload = json.loads(json.dumps(ACCOUNTS))
         payload["claude"]["activeAccountId"] = self.active
         return {"id": request["id"], "ok": True, "result": payload}
@@ -175,6 +175,40 @@ class TestSync:
             assert orca.sync_active_account("b@example.com") is None
         finally:
             server.close()
+
+
+class TestDetach:
+    def test_detach_clears_the_active_account(self, runtime):
+        assert orca.detach() is True
+        select = [r for r in runtime.requests if r["method"] == "accounts.selectClaude"]
+        assert select[-1]["params"] == {"accountId": None}
+        assert runtime.active is None
+
+    def test_detach_when_already_detached_is_a_no_op(self, runtime):
+        runtime.active = None
+        assert orca.detach() is False
+        assert [r["method"] for r in runtime.requests] == ["accounts.list"]
+
+    def test_keep_detached_reports_only_when_it_acted(self, runtime):
+        assert orca.keep_detached() == "Orca detached from the Claude login"
+        assert orca.keep_detached() is None
+
+    def test_keep_detached_is_silent_when_orca_is_closed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ORCA_RUNTIME_METADATA", str(tmp_path / "gone.json"))
+        assert orca.keep_detached() is None
+
+    def test_status_reports_management(self, runtime):
+        info = orca.status()
+        assert info == {
+            "running": True, "managing": True, "activeEmail": "a@example.com",
+            "accounts": ["a@example.com", "b@example.com"],
+        }
+        orca.detach()
+        assert orca.status()["managing"] is False
+
+    def test_status_when_not_running(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ORCA_RUNTIME_METADATA", str(tmp_path / "gone.json"))
+        assert orca.status()["running"] is False
 
 
 def test_metadata_path_prefers_env(monkeypatch, tmp_path):

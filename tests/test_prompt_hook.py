@@ -22,6 +22,7 @@ def _args(**overrides) -> argparse.Namespace:
         rotate=None,
         skip_path=[],
         sync_orca=False,
+        detach_orca=False,
         reserve=None,
         force=True,
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
@@ -468,47 +469,108 @@ class TestUninstalledMeansOff(TestRunHook):
         switcher.switch.assert_not_called()
 
 
-class TestOrcaSync(TestRunHook):
-    def test_sync_runs_after_a_switch(self, backup_dir, capsys):
+class TestHealAfterLogin:
+    """A /login over a dead backup is saved automatically."""
+
+    def _switcher(self, sentinel):
+        sw = MagicMock()
+        sw.current_account_number.return_value = "2"
+        sw._usage_by_account.return_value = {"2": sentinel}
+        return sw
+
+    def test_dead_backup_with_live_login_is_saved(self):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        sw = self._switcher(USAGE_RELOGIN_REQUIRED)
+        assert prompt_hook._heal_current_account(sw) == "saved your new login for Account-2"
+        sw.add_account.assert_called_once_with(assume_yes=True)
+
+    def test_healthy_account_is_left_alone(self):
+        sw = self._switcher({"five_hour": {"pct": 10}})
+        assert prompt_hook._heal_current_account(sw) is None
+        sw.add_account.assert_not_called()
+
+    def test_unmanaged_login_is_left_alone(self):
+        sw = MagicMock()
+        sw.current_account_number.return_value = None
+        assert prompt_hook._heal_current_account(sw) is None
+        sw.add_account.assert_not_called()
+
+    def test_add_output_never_reaches_stdout(self, capsys):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        sw = self._switcher(USAGE_RELOGIN_REQUIRED)
+        sw.add_account.side_effect = lambda **kw: print("Added Account 2: b@example.com")
+        prompt_hook._heal_current_account(sw)
+        assert capsys.readouterr().out == ""
+
+    def test_add_failure_is_silent(self):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        sw = self._switcher(USAGE_RELOGIN_REQUIRED)
+        sw.add_account.side_effect = RuntimeError("keychain locked")
+        assert prompt_hook._heal_current_account(sw) is None
+
+
+class TestKeepOrcaDetached(TestRunHook):
+    """--detach-orca (and the old --sync-orca) keep Orca off the Claude login."""
+
+    def test_detach_runs_before_the_switch(self, backup_dir):
+        order = []
         switcher = MagicMock()
         switcher.backup_dir = backup_dir
-        switcher._get_current_account.return_value = ("b@example.com", "org")
-        switcher.switch.return_value = {"switched": True, "message": "Switched to Account-2 (b@example.com)"}
+        switcher.switch.side_effect = lambda **kw: order.append("switch") or {
+            "switched": True, "message": "Switched to Account-2 (b@e)"}
         with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
-             patch("claude_swap.orca.sync_active_account", return_value="Orca now follows b@example.com") as sync, \
+             patch("claude_swap.orca.keep_detached", side_effect=lambda: order.append("detach")), \
              patch.object(prompt_hook, "_read_payload", return_value={}):
-            prompt_hook.run_hook(_args(rotate="best", min_interval=0, sync_orca=True))
-        sync.assert_called_once_with("b@example.com")
-        assert "Orca now follows" in json.loads(capsys.readouterr().out)["systemMessage"]
+            prompt_hook.run_hook(_args(rotate="best", min_interval=0, detach_orca=True))
+        assert order == ["detach", "switch"]
 
-    def test_no_sync_without_the_flag(self, backup_dir):
-        with patch("claude_swap.orca.sync_active_account") as sync:
+    def test_old_sync_orca_flag_now_detaches(self, backup_dir):
+        with patch("claude_swap.orca.keep_detached", return_value=None) as keep:
+            self._run(
+                backup_dir, [], args=_args(rotate="best", min_interval=0, sync_orca=True),
+                switch_result={"switched": False},
+            )
+        keep.assert_called_once()
+
+    def test_no_orca_contact_without_the_flag(self, backup_dir):
+        with patch("claude_swap.orca.keep_detached") as keep:
             self._run(
                 backup_dir, [], args=_args(rotate="best", min_interval=0),
                 switch_result={"switched": True, "message": "Switched to Account-2 (b@e)"},
             )
-        sync.assert_not_called()
+        keep.assert_not_called()
 
-    def test_no_sync_when_nothing_switched(self, backup_dir):
-        with patch("claude_swap.orca.sync_active_account") as sync:
+    def test_detach_is_reported_even_without_a_switch(self, backup_dir, capsys):
+        with patch("claude_swap.orca.keep_detached", return_value="Orca detached from the Claude login"):
             self._run(
-                backup_dir, [NoSwitchEvent(reason="below-threshold")],
-                args=_args(min_interval=0, sync_orca=True),
+                backup_dir, [], args=_args(rotate="best", min_interval=0, detach_orca=True),
+                switch_result={"switched": False},
             )
-        sync.assert_not_called()
+        assert "Orca detached" in json.loads(capsys.readouterr().out)["systemMessage"]
 
-    def test_sync_failure_never_breaks_the_message(self, backup_dir, capsys):
-        switcher = MagicMock()
-        switcher.backup_dir = backup_dir
-        switcher._get_current_account.side_effect = RuntimeError("no login")
-        switcher.switch.return_value = {"switched": True, "message": "Switched to Account-2 (b@e)"}
-        with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
-             patch.object(prompt_hook, "_read_payload", return_value={}):
-            assert prompt_hook.run_hook(_args(rotate="best", min_interval=0, sync_orca=True)) == 0
+    def test_detach_failure_never_breaks_the_prompt(self, backup_dir, capsys):
+        with patch("claude_swap.orca.keep_detached", side_effect=RuntimeError("boom")):
+            code, _, _ = self._run(
+                backup_dir, [], args=_args(rotate="best", min_interval=0, detach_orca=True),
+                switch_result={"switched": True, "message": "Switched to Account-2 (b@e)"},
+            )
+        assert code == 0
         assert "Account-2" in json.loads(capsys.readouterr().out)["systemMessage"]
 
-    def test_sync_orca_is_forwarded(self):
-        assert prompt_hook._forwarded_options(_args(sync_orca=True)) == ["--sync-orca"]
+    def test_relogin_required_is_reported(self, backup_dir, capsys):
+        self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0),
+            switch_result={"switched": False, "reason": "relogin-required",
+                           "message": "Account-2 need a re-login — staying on Account-1."},
+        )
+        assert "re-login" in json.loads(capsys.readouterr().out)["systemMessage"]
+
+    def test_both_flags_forward_as_detach(self):
+        assert prompt_hook._forwarded_options(_args(sync_orca=True)) == ["--detach-orca"]
+        assert prompt_hook._forwarded_options(_args(detach_orca=True)) == ["--detach-orca"]
 
 
 def test_bad_flag_on_run_path_does_not_block_prompt():

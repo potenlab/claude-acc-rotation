@@ -121,20 +121,53 @@ def _throttled(stamp: Path, min_interval: float, now: float) -> bool:
     return False
 
 
-def _sync_orca(args: argparse.Namespace, switcher) -> str | None:
-    """Tell Orca which account is active now, so it stops reverting the switch."""
-    if not args.sync_orca:
+def _heal_current_account(switcher) -> str | None:
+    """Save a fresh ``/login`` over a dead backup — no ``cswap add`` needed.
+
+    When the account you are logged into is marked "re-login needed" (its
+    stored refresh token was revoked) yet the live login is there, you have
+    just logged in again: capture it, exactly as ``cswap add`` would. Only in
+    that state — a healthy account's backup is left to the normal
+    capture-on-switch — and never with output on stdout, which Claude Code
+    would inject into the model's context.
+    """
+    import contextlib
+    import io
+
+    try:
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        current = switcher.current_account_number()
+        if current is None:
+            return None
+        if switcher._usage_by_account().get(current) != USAGE_RELOGIN_REQUIRED:
+            return None
+        with contextlib.redirect_stdout(io.StringIO()):
+            switcher.add_account(assume_yes=True)
+        return f"saved your new login for Account-{current}"
+    except Exception:
+        return None
+
+
+def _keep_orca_detached(args: argparse.Namespace) -> str | None:
+    """Keep the Orca app from managing the Claude login alongside cswap.
+
+    Two managers writing one login overwrite each other's refresh tokens, and
+    the loser's next request is a 401 "OAuth access token has been revoked".
+    Pointing Orca at the account cswap picked (the old ``--sync-orca``) still
+    left both writing; detaching Orca leaves cswap the only writer. Checked on
+    every run so picking an account in Orca's menu is undone at the next
+    prompt, and ``--sync-orca`` in a command an open session captured earlier
+    now gets this safe behaviour too.
+    """
+    if not (args.detach_orca or args.sync_orca):
         return None
     try:
         from claude_swap import orca
 
-        identity = switcher._get_current_account()
+        return orca.keep_detached()
     except Exception:
         return None
-    if not identity:
-        return None
-    email = identity[0]
-    return orca.sync_active_account(email)
 
 
 def _system_message(events: list) -> str | None:
@@ -184,7 +217,7 @@ def _rotate(switcher, strategy: str, reserve: float = DEFAULT_RESERVE) -> str | 
         return None
     if result.get("switched"):
         return f"cswap: {result.get('message', 'switched account')}"
-    if result.get("reason") == "candidates-exhausted":
+    if result.get("reason") in ("candidates-exhausted", "relogin-required"):
         # Every other account is held out; say so instead of failing silently.
         return f"cswap: {result.get('message', 'all other accounts are at their limit')}"
     return None
@@ -213,6 +246,12 @@ def run_hook(args: argparse.Namespace) -> int:
         ):
             return 0
 
+        # Before switching: an attached Orca would revert the switch, and a
+        # just-renewed login should be saved before rotating away from it.
+        orca_note = _keep_orca_detached(args)
+        healed = _heal_current_account(switcher)
+        if healed:
+            orca_note = f"{healed} · {orca_note}" if orca_note else healed
         if args.rotate:
             message = (
                 f"cswap: [dry-run] would rotate ({args.rotate})"
@@ -227,10 +266,8 @@ def run_hook(args: argparse.Namespace) -> int:
             )
             engine.tick()
             message = _system_message(events)
-        if message:
-            note = _sync_orca(args, switcher)
-            if note:
-                message = f"{message} · {note}"
+        if orca_note:
+            message = f"{message} · {orca_note}" if message else f"cswap: {orca_note}"
         if message and not args.quiet:
             print(json.dumps({"systemMessage": message}), flush=True)
     except Exception as e:  # never break the user's prompt
@@ -385,12 +422,17 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
         help="Minimum time between proactive switches (default: autoswitch.cooldown)",
     )
     parser.add_argument(
-        "--sync-orca",
+        "--detach-orca",
         action="store_true",
         help=(
-            "After a switch, point the Orca app at the same account so it "
-            "doesn't revert the login on its next pane launch or usage poll"
+            "Keep the Orca app from managing the Claude login, so the two "
+            "never overwrite each other's tokens (checked on every prompt)"
         ),
+    )
+    parser.add_argument(
+        "--sync-orca",
+        action="store_true",
+        help=argparse.SUPPRESS,  # old name; now behaves as --detach-orca
     )
     parser.add_argument(
         "--skip-path",
@@ -473,8 +515,8 @@ def _forwarded_options(args: argparse.Namespace) -> list[str]:
         out.append(f"--min-interval={_format_value(args.min_interval)}")
     if args.rotate and args.reserve is not None:
         out.append(f"--reserve={_format_value(args.reserve)}")
-    if args.sync_orca:
-        out.append("--sync-orca")
+    if args.detach_orca or args.sync_orca:
+        out.append("--detach-orca")
     for path in args.skip_path:
         out.append(shlex.quote(f"--skip-path={path}"))
     if args.quiet:

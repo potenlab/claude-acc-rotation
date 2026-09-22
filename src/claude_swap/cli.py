@@ -18,6 +18,7 @@ from claude_swap.printer import (
     force_utf8_output,
     muted,
     warning,
+    yellowed,
 )
 from claude_swap.settings import load_ui_settings
 from claude_swap.switcher import ClaudeAccountSwitcher
@@ -745,6 +746,55 @@ Defaults live in settings.json in the backup root; flags override them.
         sys.exit(130)
 
 
+def _orca_command(argv: list[str]) -> None:
+    """Handle `cswap orca [status|detach] [--json]`."""
+    from claude_swap import orca
+
+    parser = argparse.ArgumentParser(
+        prog="cswap orca",
+        description=(
+            "Check or stop the Orca app managing the Claude login. Orca and "
+            "cswap writing the same login overwrite each other's refresh "
+            "tokens (401 'OAuth access token has been revoked'); detaching "
+            "Orca leaves cswap the only writer. Orca's terminals keep working."
+        ),
+    )
+    parser.add_argument("action", nargs="?", choices=("status", "detach"), default="status")
+    parser.add_argument("--json", action="store_true", help="Machine-readable output")
+    args = parser.parse_args(argv)
+
+    if args.action == "detach":
+        try:
+            changed = orca.detach()
+        except orca.OrcaUnavailable as e:
+            if args.json:
+                print(json.dumps({"detached": False, "running": False, "detail": str(e)}))
+            else:
+                print(dimmed(f"Orca isn't running ({e}); nothing to detach."))
+            return
+        if args.json:
+            print(json.dumps({"detached": True, "changed": changed}))
+        elif changed:
+            print(accent("Orca no longer manages the Claude login; cswap is the only writer now."))
+        else:
+            print(dimmed("Orca was already detached."))
+        return
+
+    info = orca.status()
+    if args.json:
+        print(json.dumps(info))
+        return
+    if not info["running"]:
+        print(dimmed("Orca isn't running."))
+    elif info["managing"]:
+        print(yellowed(
+            f"Orca is managing the Claude login (active: {info['activeEmail']}). "
+            "It will overwrite cswap's tokens — run: cswap orca detach"
+        ))
+    else:
+        print(accent("Orca is detached: cswap is the only writer of the Claude login."))
+
+
 def _config_command(argv: list[str]) -> None:
     """Handle `cswap config [list|get KEY|set KEY VALUE|unset KEY|path]`.
 
@@ -996,6 +1046,9 @@ def main() -> None:
     if argv and argv[0] == "auto":
         _auto_command(argv[1:])
         return  # only reachable in tests where sys.exit is mocked
+    if argv and argv[0] == "orca":
+        _orca_command(argv[1:])
+        return
     if argv and argv[0] == "hook":
         from claude_swap.prompt_hook import hook_command_main
 

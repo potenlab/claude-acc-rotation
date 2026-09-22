@@ -1,17 +1,19 @@
-"""Keep the Orca app's active Claude account in step with cswap's.
+"""Keep the Orca app from fighting cswap over the Claude login.
 
 Orca (https://orca.computer) manages Claude accounts of its own and writes the
 same system login cswap does — ``~/.claude/.credentials.json``, the
 ``Claude Code-credentials`` Keychain item and ``oauthAccount`` in
 ``~/.claude.json``. It re-asserts its choice on every Claude pane launch, on
-window focus and on a background usage poll, so a switch cswap makes is undone
-minutes later unless Orca is told about it.
+window focus and on a background usage poll. With both tools writing, each
+restores refresh tokens the other has already rotated, and the server revokes
+them: ``401 OAuth access token has been revoked`` until the account is logged
+in again. The fix is one writer, so cswap *detaches* Orca (its "system default"
+choice) rather than keeping two managers in step.
 
 There is no public API for that. The runtime does expose ``accounts.selectClaude``
 over the local unix socket named in its metadata file, which is what this module
 calls. That is **undocumented**: every entry point degrades to "do nothing" when
-Orca isn't running, the method is missing, or anything else goes wrong — the
-caller's switch has already happened and must never fail because of Orca.
+Orca isn't running, the method is missing, or anything else goes wrong.
 """
 
 from __future__ import annotations
@@ -146,6 +148,51 @@ def sync_active_account(email: str, timeout: float = _SELECT_TIMEOUT) -> str | N
         return None
     except Exception:  # an undocumented API must never break a switch
         return None
+
+
+def detach(timeout: float = _SELECT_TIMEOUT) -> bool:
+    """Stop Orca managing the Claude login; True if it was managing it.
+
+    ``accounts.selectClaude(null)`` is Orca's "system default" choice: it keeps
+    its account list but stops re-asserting a managed account's credentials on
+    pane launch, window focus and its usage poll. That is what lets cswap own
+    the login without the two tools overwriting each other's refresh tokens.
+    Only called when Orca reports an active account, so it is a no-op (one
+    ``accounts.list``) once detached.
+    """
+    _, active = claude_accounts(timeout=DEFAULT_TIMEOUT)
+    if active is None:
+        return False
+    call("accounts.selectClaude", {"accountId": None}, timeout=timeout)
+    return True
+
+
+def keep_detached() -> str | None:
+    """Re-detach Orca if something (its account menu) re-attached it.
+
+    Returns a short note when Orca had to be detached, else None. Never raises.
+    """
+    try:
+        return "Orca detached from the Claude login" if detach() else None
+    except OrcaUnavailable:
+        return None
+    except Exception:  # an undocumented API must never break a prompt
+        return None
+
+
+def status() -> dict:
+    """Snapshot for ``cswap orca status``."""
+    try:
+        by_email, active = claude_accounts()
+    except OrcaUnavailable as e:
+        return {"running": False, "detail": str(e)}
+    active_email = next((e for e, i in by_email.items() if i == active), None)
+    return {
+        "running": True,
+        "managing": active is not None,
+        "activeEmail": active_email,
+        "accounts": sorted(by_email),
+    }
 
 
 def is_running() -> bool:
