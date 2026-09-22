@@ -469,6 +469,129 @@ class TestUninstalledMeansOff(TestRunHook):
         switcher.switch.assert_not_called()
 
 
+class TestFirstPromptLoginCheck:
+    """The first prompt of each session must not go out on a revoked login."""
+
+    def test_session_is_first_only_once(self, tmp_path):
+        assert prompt_hook._is_first_prompt(tmp_path, "sess-1") is True
+        assert prompt_hook._is_first_prompt(tmp_path, "sess-1") is False
+        assert prompt_hook._is_first_prompt(tmp_path, "sess-2") is True
+
+    def test_missing_session_id_is_never_first(self, tmp_path):
+        assert prompt_hook._is_first_prompt(tmp_path, None) is False
+        assert prompt_hook._is_first_prompt(tmp_path, "") is False
+
+    def test_corrupt_session_file_recovers(self, tmp_path):
+        (tmp_path / prompt_hook.SESSIONS_FILENAME).write_text("{not json")
+        assert prompt_hook._is_first_prompt(tmp_path, "sess-1") is True
+
+    def test_session_memory_is_bounded(self, tmp_path):
+        for i in range(prompt_hook._SESSIONS_KEPT + 50):
+            prompt_hook._is_first_prompt(tmp_path, f"s{i}")
+        seen = json.loads((tmp_path / prompt_hook.SESSIONS_FILENAME).read_text())
+        assert len(seen) == prompt_hook._SESSIONS_KEPT
+
+    def test_revoked_login_moves_to_a_usable_account(self):
+        sw = MagicMock()
+        sw.current_account_number.return_value = "2"
+        sw.switch.return_value = {"switched": True, "message": "Switched to Account-3 (c@e)"}
+        with patch.object(prompt_hook, "_live_login_verdict", return_value="revoked"):
+            note = prompt_hook._ensure_usable_login(_args(), sw)
+        assert note == "Account-2's login was revoked — Switched to Account-3 (c@e)"
+        assert sw.switch.call_args.kwargs["strategy"] == "next-available"
+
+    def test_revoked_with_nowhere_to_go_says_run_login(self):
+        sw = MagicMock()
+        sw.current_account_number.return_value = "2"
+        sw.switch.return_value = {"switched": False, "reason": "relogin-required"}
+        with patch.object(prompt_hook, "_live_login_verdict", return_value="revoked"):
+            note = prompt_hook._ensure_usable_login(_args(), sw)
+        assert "run /login" in note
+
+    @pytest.mark.parametrize("verdict", ["ok", "expired", "unknown"])
+    def test_only_revoked_triggers_a_switch(self, verdict):
+        sw = MagicMock()
+        with patch.object(prompt_hook, "_live_login_verdict", return_value=verdict):
+            assert prompt_hook._ensure_usable_login(_args(), sw) is None
+        sw.switch.assert_not_called()
+
+    def test_first_prompt_check_runs_even_when_throttled(self, tmp_path, capsys):
+        backup = tmp_path / "backup"
+        backup.mkdir()
+        (backup / prompt_hook.STAMP_FILENAME).touch()  # just ran: throttled
+        sw = MagicMock()
+        sw.backup_dir = backup
+        with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=sw), \
+             patch.object(prompt_hook, "_read_payload", return_value={"session_id": "new"}), \
+             patch.object(prompt_hook, "_ensure_usable_login", return_value="Account-2's login was revoked — Switched to Account-3 (c@e)") as ensure:
+            prompt_hook.run_hook(_args(min_interval=999))
+        ensure.assert_called_once()
+        assert "revoked" in json.loads(capsys.readouterr().out)["systemMessage"]
+
+    def test_after_moving_off_a_dead_login_no_second_switch(self, tmp_path):
+        backup = tmp_path / "backup"
+        sw = MagicMock()
+        sw.backup_dir = backup
+        with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=sw), \
+             patch.object(prompt_hook, "_read_payload", return_value={"session_id": "new"}), \
+             patch.object(prompt_hook, "_ensure_usable_login", return_value="moved"):
+            prompt_hook.run_hook(_args(rotate="next-available", min_interval=0))
+        sw.switch.assert_not_called()  # _ensure_usable_login did the only switch
+
+
+class TestProbeAccessToken:
+    def _creds(self, expires_in_ms: int) -> str:
+        import time as _t
+
+        return json.dumps({"claudeAiOauth": {
+            "accessToken": "tok", "refreshToken": "rt",
+            "expiresAt": int(_t.time() * 1000) + expires_in_ms,
+        }})
+
+    def test_ok(self):
+        from claude_swap import oauth
+
+        with patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value = MagicMock()
+            assert oauth.probe_access_token(self._creds(3_600_000)) == "ok"
+
+    def test_401_within_expiry_is_revoked(self):
+        import urllib.error
+
+        from claude_swap import oauth
+
+        err = urllib.error.HTTPError("u", 401, "revoked", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            assert oauth.probe_access_token(self._creds(3_600_000)) == "revoked"
+
+    def test_expired_token_is_not_asked(self):
+        from claude_swap import oauth
+
+        with patch("urllib.request.urlopen") as urlopen:
+            assert oauth.probe_access_token(self._creds(-60_000)) == "expired"
+        urlopen.assert_not_called()
+
+    def test_network_error_is_unknown(self):
+        from claude_swap import oauth
+
+        with patch("urllib.request.urlopen", side_effect=OSError("offline")):
+            assert oauth.probe_access_token(self._creds(3_600_000)) == "unknown"
+
+    def test_other_http_status_is_unknown(self):
+        import urllib.error
+
+        from claude_swap import oauth
+
+        err = urllib.error.HTTPError("u", 500, "oops", {}, None)
+        with patch("urllib.request.urlopen", side_effect=err):
+            assert oauth.probe_access_token(self._creds(3_600_000)) == "unknown"
+
+    def test_no_token_is_unknown(self):
+        from claude_swap import oauth
+
+        assert oauth.probe_access_token("{}") == "unknown"
+
+
 class TestHealAfterLogin:
     """A /login over a dead backup is saved automatically."""
 
@@ -482,8 +605,18 @@ class TestHealAfterLogin:
         from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
 
         sw = self._switcher(USAGE_RELOGIN_REQUIRED)
-        assert prompt_hook._heal_current_account(sw) == "saved your new login for Account-2"
+        with patch.object(prompt_hook, "_live_login_verdict", return_value="ok"):
+            assert prompt_hook._heal_current_account(sw) == "saved your new login for Account-2"
         sw.add_account.assert_called_once_with(assume_yes=True)
+
+    def test_revoked_live_login_is_not_saved(self):
+        """Saving a dead login over a dead backup would falsely claim success."""
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        sw = self._switcher(USAGE_RELOGIN_REQUIRED)
+        with patch.object(prompt_hook, "_live_login_verdict", return_value="revoked"):
+            assert prompt_hook._heal_current_account(sw) is None
+        sw.add_account.assert_not_called()
 
     def test_healthy_account_is_left_alone(self):
         sw = self._switcher({"five_hour": {"pct": 10}})
@@ -501,7 +634,8 @@ class TestHealAfterLogin:
 
         sw = self._switcher(USAGE_RELOGIN_REQUIRED)
         sw.add_account.side_effect = lambda **kw: print("Added Account 2: b@example.com")
-        prompt_hook._heal_current_account(sw)
+        with patch.object(prompt_hook, "_live_login_verdict", return_value="ok"):
+            prompt_hook._heal_current_account(sw)
         assert capsys.readouterr().out == ""
 
     def test_add_failure_is_silent(self):
@@ -509,7 +643,8 @@ class TestHealAfterLogin:
 
         sw = self._switcher(USAGE_RELOGIN_REQUIRED)
         sw.add_account.side_effect = RuntimeError("keychain locked")
-        assert prompt_hook._heal_current_account(sw) is None
+        with patch.object(prompt_hook, "_live_login_verdict", return_value="ok"):
+            assert prompt_hook._heal_current_account(sw) is None
 
 
 class TestKeepOrcaDetached(TestRunHook):

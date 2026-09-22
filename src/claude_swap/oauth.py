@@ -325,6 +325,43 @@ def fetch_oauth_profile(access_token: str) -> dict | None:
 
 
 
+def probe_access_token(credentials: str, timeout: float = 4.0) -> str:
+    """Ask the server whether a credential's access token still works.
+
+    Returns ``"ok"``, ``"revoked"``, ``"expired"`` or ``"unknown"``:
+
+    - ``"expired"``: the access token is past its expiry locally. Claude Code
+      refreshes it on the next request, so this is not a verdict and the
+      server is not asked.
+    - ``"revoked"``: still within its expiry, yet the server answers 401. That
+      is the "OAuth access token has been revoked" state — another copy of the
+      refresh token was used, and this login cannot recover without /login.
+    - ``"unknown"``: no token, a network error, or any other status. Callers
+      must treat it as "don't act".
+    """
+    oauth = extract_oauth_data(credentials)
+    token = oauth.get("accessToken") if isinstance(oauth, dict) else None
+    if not isinstance(token, str) or not token:
+        return "unknown"
+    if is_oauth_token_expired(oauth.get("expiresAt")):
+        return "expired"
+    req = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/profile",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "claude-swap/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout):
+            return "ok"
+    except urllib.error.HTTPError as e:
+        return "revoked" if e.code == 401 else "unknown"
+    except Exception:
+        return "unknown"
+
+
 def build_token_status(credentials: str) -> str | None:
     """Return a short debug summary of stored OAuth token state."""
     oauth = extract_oauth_data(credentials)

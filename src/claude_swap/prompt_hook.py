@@ -38,6 +38,8 @@ DEFAULT_MIN_INTERVAL = 20.0
 # at 98% would hit its limit on the very next message.
 DEFAULT_RESERVE = 5.0
 STAMP_FILENAME = "prompt_hook_last_run"
+SESSIONS_FILENAME = "prompt_hook_sessions.json"
+_SESSIONS_KEPT = 200
 _MANAGEMENT_ACTIONS = {"install", "uninstall", "status"}
 # Identifies a hook entry we installed, in either launcher form:
 # `"/path/to/cswap" hook ...` or `"/path/to/python" -m claude_swap hook ...`.
@@ -121,6 +123,68 @@ def _throttled(stamp: Path, min_interval: float, now: float) -> bool:
     return False
 
 
+def _is_first_prompt(backup_dir: Path, session_id: object) -> bool:
+    """True the first time a Claude Code session id is seen (then remembered)."""
+    if not isinstance(session_id, str) or not session_id:
+        return False
+    path = backup_dir / SESSIONS_FILENAME
+    try:
+        seen = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(seen, list):
+            seen = []
+    except (OSError, ValueError):
+        seen = []
+    if session_id in seen:
+        return False
+    seen = (seen + [session_id])[-_SESSIONS_KEPT:]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(seen), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
+def _live_login_verdict(switcher) -> str:
+    """Server-checked state of the login Claude Code will use right now."""
+    try:
+        from claude_swap import oauth
+
+        active = switcher._read_active_credentials()
+        if active.degraded or not active.value:
+            return "unknown"
+        return oauth.probe_access_token(active.value)
+    except Exception:
+        return "unknown"
+
+
+def _ensure_usable_login(args: argparse.Namespace, switcher) -> str | None:
+    """First prompt of a session: make sure it isn't sent on a dead login.
+
+    A revoked login fails every request with a 401 until /login, whatever its
+    quota. Checked once per session (a network round-trip), in every mode —
+    threshold mode would otherwise never move off an account with room left.
+    Moves to the next usable account, skipping dead, disabled and near-limit
+    ones; says so either way.
+    """
+    if _live_login_verdict(switcher) != "revoked":
+        return None
+    current = switcher.current_account_number()
+    here = f"Account-{current}" if current else "The current account"
+    try:
+        result = switcher.switch(
+            strategy="next-available", json_output=True, reserve=_reserve(args, switcher)
+        )
+    except Exception:
+        result = None
+    if result and result.get("switched"):
+        return f"{here}'s login was revoked — {result.get('message', 'switched account')}"
+    return (
+        f"{here}'s login was revoked and no other account is usable — "
+        "run /login (cswap saves it automatically)"
+    )
+
+
 def _heal_current_account(switcher) -> str | None:
     """Save a fresh ``/login`` over a dead backup — no ``cswap add`` needed.
 
@@ -141,6 +205,10 @@ def _heal_current_account(switcher) -> str | None:
         if current is None:
             return None
         if switcher._usage_by_account().get(current) != USAGE_RELOGIN_REQUIRED:
+            return None
+        if _live_login_verdict(switcher) != "ok":
+            # Not a fresh /login: saving it would overwrite one dead token
+            # with another and claim success.
             return None
         with contextlib.redirect_stdout(io.StringIO()):
             switcher.add_account(assume_yes=True)
@@ -233,6 +301,7 @@ def run_hook(args: argparse.Namespace) -> int:
         # hook command at startup and keeps running it after `hook uninstall`,
         # so the command itself has to check that it is still wanted.
         return 0
+    notes: list[str] = []
     try:
         from claude_swap.autoswitch import AutoSwitchEngine
         from claude_swap.settings import load_settings, merged_with_cli
@@ -241,38 +310,48 @@ def run_hook(args: argparse.Namespace) -> int:
         switcher = ClaudeAccountSwitcher(debug=args.debug)
         if _in_session_profile(switcher.backup_dir):
             return 0
-        if _throttled(
+
+        # An attached Orca would revert any switch below.
+        orca_note = _keep_orca_detached(args)
+        if orca_note:
+            notes.append(orca_note)
+
+        # First prompt of a session, before the throttle can skip it: never let
+        # it go out on a revoked login.
+        moved_off_dead = None
+        if _is_first_prompt(switcher.backup_dir, payload.get("session_id")):
+            moved_off_dead = _ensure_usable_login(args, switcher)
+            if moved_off_dead:
+                notes.append(moved_off_dead)
+
+        if not moved_off_dead and not _throttled(
             switcher.backup_dir / STAMP_FILENAME, args.min_interval, time.time()
         ):
-            return 0
-
-        # Before switching: an attached Orca would revert the switch, and a
-        # just-renewed login should be saved before rotating away from it.
-        orca_note = _keep_orca_detached(args)
-        healed = _heal_current_account(switcher)
-        if healed:
-            orca_note = f"{healed} · {orca_note}" if orca_note else healed
-        if args.rotate:
-            message = (
-                f"cswap: [dry-run] would rotate ({args.rotate})"
-                if args.dry_run
-                else _rotate(switcher, args.rotate, _reserve(args, switcher))
-            )
-        else:
-            events: list = []
-            settings = merged_with_cli(load_settings(switcher.backup_dir), args)
-            engine = AutoSwitchEngine(
-                switcher, settings, events.append, dry_run=args.dry_run
-            )
-            engine.tick()
-            message = _system_message(events)
-        if orca_note:
-            message = f"{message} · {orca_note}" if message else f"cswap: {orca_note}"
-        if message and not args.quiet:
-            print(json.dumps({"systemMessage": message}), flush=True)
+            # A just-renewed login is saved before rotating away from it.
+            healed = _heal_current_account(switcher)
+            if healed:
+                notes.append(healed)
+            if args.rotate:
+                message = (
+                    f"cswap: [dry-run] would rotate ({args.rotate})"
+                    if args.dry_run
+                    else _rotate(switcher, args.rotate, _reserve(args, switcher))
+                )
+            else:
+                events: list = []
+                settings = merged_with_cli(load_settings(switcher.backup_dir), args)
+                engine = AutoSwitchEngine(
+                    switcher, settings, events.append, dry_run=args.dry_run
+                )
+                engine.tick()
+                message = _system_message(events)
+            if message:
+                notes.insert(0, message.removeprefix("cswap: "))
     except Exception as e:  # never break the user's prompt
         if args.debug:
             print(f"cswap hook: {e}", file=sys.stderr)
+    if notes and not args.quiet:
+        print(json.dumps({"systemMessage": "cswap: " + " · ".join(notes)}), flush=True)
     return 0
 
 

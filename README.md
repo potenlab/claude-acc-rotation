@@ -218,6 +218,8 @@ cswap hook install --rotate --reserve 10     # hold accounts back at 90% used
 cswap hook install --rotate --reserve 0      # only skip accounts fully at 100%
 ```
 
+**The first prompt of every session checks your login first.** Before it goes out, the hook asks Anthropic's server whether the account you're logged into still works. An account whose token was revoked still looks valid locally, and every request on it fails with `401 OAuth access token has been revoked` — so if the check fails, the hook moves to the next usable account before your prompt is sent (`cswap: Account-2's login was revoked — Switched to Account-3 ...`). This runs in every mode, once per session, and never acts on an expired-but-refreshable token or a network error.
+
 Accounts whose saved refresh token is dead are skipped too — switching onto one would only produce a 401 — and the hook names them so you know which to log in again. After you `/login` with such an account, the next prompt saves the new login automatically; no `cswap add` needed.
 
 If every other account is held out, the hook stays on the current one and says so (`cswap: All other accounts are at their 5h/7d limit (keeping 5% in reserve) — staying on Account-1.`) rather than failing silently.
