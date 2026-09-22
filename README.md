@@ -19,10 +19,10 @@ No flags or config needed — out of the box, every prompt:
 - shows the active account **under the Claude Code prompt**:
 
   ```
-  ⇄ Account-1 you@example.com · 5h 26% · 7d 50% · next Account-3
+  ⇄ Account-1 you@example.com · 5h 26% · 7d 50% · → Account-3 dev@example.com (62% left)
   ```
 
-  `next` is where it would move when this account runs out; right after a switch you also see `↻ from Account-4 1m ago`. If another tool (Orca, for one) already had the status line, it keeps running alongside — and comes back if you uninstall.
+  `→` is the account the next prompt moves to, with the room it has left. When every other account is held out it says which frees up first — `→ none free, Account-3 in 2d 15h` — and an account whose login died is flagged (`Account-2 needs /login`), since a `/login` brings its whole quota back. Right after a switch you also see `↻ from Account-4 1m ago`. If another tool (Orca, for one) already had the status line, it keeps running alongside — and comes back if you uninstall.
 
 Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`. (After a later `/login` with an account cswap already knows, the next prompt saves it by itself.)
 

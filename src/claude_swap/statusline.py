@@ -41,6 +41,7 @@ _BOLD = "\033[1m"
 _GREEN = "\033[32m"
 _YELLOW = "\033[33m"
 _RED = "\033[31m"
+_CYAN = "\033[36m"
 _RESET = "\033[0m"
 
 
@@ -142,6 +143,68 @@ def _next_account(
     return best
 
 
+def _parse_ts(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
+def _frees_at(usage: dict, num: str) -> float | None:
+    """When a held-out account gets back above the reserve (its binding resets)."""
+    entry = (usage.get("accounts") or {}).get(num)
+    good = entry.get("lastGood") if isinstance(entry, dict) else None
+    if not isinstance(good, dict):
+        return None
+    times = []
+    for key in ("five_hour", "seven_day"):
+        window = good.get(key)
+        pct = _pct(window)
+        if pct is not None and pct >= 100 - RESERVE:
+            ts = _parse_ts(window.get("resets_at")) if isinstance(window, dict) else None
+            if ts is None:
+                return None
+            times.append(ts)
+    return max(times) if times else None
+
+
+def _soonest_free(sequence: dict, usage: dict, current: str, now: float) -> tuple[str, float] | None:
+    """The held-out account that gets room back first, and when."""
+    best = None
+    for raw in sequence.get("sequence") or []:
+        num = str(raw)
+        record = (sequence.get("accounts") or {}).get(num) or {}
+        if num == current or record.get("disabled") or _cached_windows(usage, num)[2]:
+            continue
+        at = _frees_at(usage, num)
+        if at is not None and at > now and (best is None or at < best[1]):
+            best = (num, at)
+    return best
+
+
+def _needs_login(sequence: dict, usage: dict, current: str) -> list[str]:
+    """Enabled accounts whose saved login is dead: a /login brings them back."""
+    return [
+        str(n) for n in sequence.get("sequence") or []
+        if str(n) != current
+        and not ((sequence.get("accounts") or {}).get(str(n)) or {}).get("disabled")
+        and _cached_windows(usage, str(n))[2]
+    ]
+
+
+def _countdown(seconds: float) -> str:
+    minutes = max(1, int(seconds // 60))
+    days, rest = divmod(minutes, 1440)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
 def _colour(pct: float | None) -> str:
     if pct is None:
         return _DIM
@@ -185,12 +248,27 @@ def render(payload: dict, backup_dir: Path, now: float | None = None, colour: bo
         _fmt("5h", five, colour),
         _fmt("7d", seven, colour),
     ]
-    room = _headroom(five, seven)
-    nxt = _next_account(sequence, usage, current, hook_mode())
-    if nxt:
-        parts.append(f"next Account-{nxt}")
-    elif room is not None and room <= RESERVE:
-        parts.append(f"{_RED}no spare account{_RESET}" if colour else "no spare account")
+    def paint(text: str, code: str) -> str:
+        return f"{code}{text}{_RESET}" if colour else text
+
+    if len(accounts) > 1:
+        nxt = _next_account(sequence, usage, current, hook_mode())
+        if nxt:
+            n5, n7, _ = _cached_windows(usage, nxt)
+            left = _headroom(n5, n7)
+            who = (accounts.get(nxt) or {}).get("email", "")
+            room_text = f" ({left:.0f}% left)" if left is not None else ""
+            parts.append(paint(f"→ Account-{nxt} {who}{room_text}".replace("  ", " "), _CYAN))
+        else:
+            soon = _soonest_free(sequence, usage, current, now)
+            text = "→ none free"
+            if soon:
+                text += f", Account-{soon[0]} in {_countdown(soon[1] - now)}"
+            parts.append(paint(text, _YELLOW))
+        dead = _needs_login(sequence, usage, current)
+        if dead:
+            names = ", ".join(f"Account-{n}" for n in dead)
+            parts.append(paint(f"{names} {'needs' if len(dead) == 1 else 'need'} /login", _RED))
 
     last = _read_json(backup_dir / LAST_SWITCH_FILENAME)
     at, came_from, to = last.get("at"), last.get("from"), last.get("to")

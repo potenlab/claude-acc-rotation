@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -51,24 +52,40 @@ class TestRender:
     def test_shows_account_usage_and_next(self, env):
         backup, _ = env
         line = statusline.render({}, backup, colour=False)
-        assert line == "⇄ Account-1 a@example.com · 5h 26% · 7d 50% · next Account-3"
+        assert line == "⇄ Account-1 a@example.com · 5h 26% · 7d 50% · → Account-3 c@example.com (80% left)"
 
     def test_next_skips_near_limit_dead_and_disabled(self, env):
         backup, _ = env
         usage(backup, {"1": (26, 50), "2": (90, 10), "3": (5, 20)}, dead=("3",))
-        assert "next" not in statusline.render({}, backup, colour=False)
+        line = statusline.render({}, backup, colour=False)
+        assert "→ Account" not in line and "Account-3 needs /login" in line
 
     def test_disabled_account_is_not_next(self, env):
         backup, _ = env
         seq = json.loads((backup / "sequence.json").read_text())
         seq["accounts"]["3"]["disabled"] = True
         (backup / "sequence.json").write_text(json.dumps(seq))
-        assert "next Account-3" not in statusline.render({}, backup, colour=False)
+        assert "→ Account-3" not in statusline.render({}, backup, colour=False)
 
-    def test_at_limit_with_no_spare_says_so(self, env):
+    def test_none_free_says_which_frees_first(self, env):
         backup, _ = env
-        usage(backup, {"1": (95, 50), "2": (90, 10), "3": (99, 0)})
-        assert statusline.render({}, backup, colour=False).endswith("no spare account")
+        now = time.time()
+        soon = datetime.fromtimestamp(now + 2 * 3600 + 5 * 60, tz=timezone.utc).isoformat()
+        later = datetime.fromtimestamp(now + 3 * 86400, tz=timezone.utc).isoformat()
+        accounts = {
+            "1": {"lastGood": {"five_hour": {"pct": 30}, "seven_day": {"pct": 40}}},
+            "2": {"lastGood": {"five_hour": {"pct": 90, "resets_at": soon}, "seven_day": {"pct": 10}}},
+            "3": {"lastGood": {"five_hour": {"pct": 0}, "seven_day": {"pct": 99, "resets_at": later}}},
+        }
+        (backup / "cache" / "usage.json").write_text(json.dumps({"accounts": accounts}))
+        line = statusline.render({}, backup, now=now, colour=False)
+        assert line.endswith("→ none free, Account-2 in 2h 5m")
+
+    def test_single_account_shows_no_next(self, env):
+        backup, _ = env
+        (backup / "sequence.json").write_text(json.dumps(
+            {"sequence": [1], "accounts": {"1": {"email": "a@example.com"}}}))
+        assert "→" not in statusline.render({}, backup, colour=False)
 
     def test_live_rate_limits_win_over_the_cache(self, env):
         backup, _ = env
@@ -80,6 +97,17 @@ class TestRender:
         backup, _ = env
         payload = {"rate_limits": {"five_hour": {"utilization": 0.4}}}
         assert "5h 40%" in statusline.render(payload, backup, colour=False)
+
+    def test_dead_login_is_flagged_even_with_quota(self, env):
+        backup, _ = env
+        usage(backup, {"1": (26, 50), "2": (2, 3), "3": (5, 20)}, dead=("2",))
+        line = statusline.render({}, backup, colour=False)
+        assert "Account-2 needs /login" in line and "→ Account-3" in line
+
+    def test_countdown_formats(self):
+        assert statusline._countdown(45) == "1m"
+        assert statusline._countdown(125 * 60) == "2h 5m"
+        assert statusline._countdown(2 * 86400 + 17 * 3600) == "2d 17h"
 
     def test_recent_switch_shows_where_it_came_from(self, env):
         backup, _ = env
