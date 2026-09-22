@@ -195,6 +195,11 @@ def run_hook(args: argparse.Namespace) -> int:
     payload = _read_payload()
     if _disabled_by_env() or _under_skip_path(payload.get("cwd"), args.skip_path):
         return 0
+    if not args.force and installed_command(claude_settings_path()) is None:
+        # Uninstalled means off everywhere. A Claude Code session captures its
+        # hook command at startup and keeps running it after `hook uninstall`,
+        # so the command itself has to check that it is still wanted.
+        return 0
     try:
         from claude_swap.autoswitch import AutoSwitchEngine
         from claude_swap.settings import load_settings, merged_with_cli
@@ -494,7 +499,7 @@ Examples:
   cswap hook install --strategy consume-first
   cswap hook status
   cswap hook uninstall
-  cswap hook --dry-run --min-interval 0 < /dev/null   # try one check by hand
+  cswap hook --force --dry-run --min-interval 0 < /dev/null   # try one check by hand
         """,
     )
     parser.add_argument(
@@ -510,6 +515,11 @@ Examples:
         help="Don't show a message in Claude Code when a switch happens",
     )
     parser.add_argument("--dry-run", action="store_true", help="Decide but never switch")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Run the check even when no hook is installed (for testing by hand)",
+    )
     parser.add_argument("--debug", action="store_true", help="Print errors to stderr")
     try:
         args = parser.parse_args(argv)

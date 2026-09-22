@@ -23,6 +23,7 @@ def _args(**overrides) -> argparse.Namespace:
         skip_path=[],
         sync_orca=False,
         reserve=None,
+        force=True,
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
         quiet=False,
         dry_run=False,
@@ -432,6 +433,39 @@ class TestReserveFromSettings(TestRunHook):
             switch_result={"switched": False},
         )
         assert switcher.switch.call_args.kwargs["reserve"] == prompt_hook.DEFAULT_RESERVE
+
+
+class TestUninstalledMeansOff(TestRunHook):
+    """An open session keeps its captured hook command after uninstall; the
+    command must notice it was removed and do nothing."""
+
+    def test_not_installed_skips_everything(self, backup_dir, tmp_path, monkeypatch):
+        monkeypatch.setattr(prompt_hook, "claude_settings_path", lambda: tmp_path / "none.json")
+        _, engine, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0, force=False),
+        )
+        engine.tick.assert_not_called()
+        switcher.switch.assert_not_called()
+
+    def test_installed_runs_normally(self, backup_dir, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        prompt_hook.install(settings, '"/bin/cswap" hook --rotate')
+        monkeypatch.setattr(prompt_hook, "claude_settings_path", lambda: settings)
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0, force=False),
+            switch_result={"switched": False},
+        )
+        switcher.switch.assert_called_once()
+
+    def test_uninstall_stops_a_running_command(self, backup_dir, tmp_path, monkeypatch):
+        settings = tmp_path / "settings.json"
+        prompt_hook.install(settings, '"/bin/cswap" hook --rotate')
+        prompt_hook.uninstall(settings)
+        monkeypatch.setattr(prompt_hook, "claude_settings_path", lambda: settings)
+        _, _, switcher = self._run(
+            backup_dir, [], args=_args(rotate="next-available", min_interval=0, force=False),
+        )
+        switcher.switch.assert_not_called()
 
 
 class TestOrcaSync(TestRunHook):
