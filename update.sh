@@ -51,10 +51,29 @@ else
     say "cswap $BEFORE -> $AFTER"
 fi
 
-# The hook is left alone: same command, same flags, same on/off state.
+# The hook keeps its on/off state and any flags you chose. The one exception:
+# flags that were only ever an earlier release's defaults (switch on EVERY
+# prompt, the old Orca sync) move to the current default, which checks every
+# prompt but switches only when the account is at its limit.
 HOOK="$("$CSWAP" hook status </dev/null 2>/dev/null || true)"
 case "$HOOK" in
-    Installed*) say "Rotation hook: on (unchanged)" ;;
+    Installed*)
+        ARGS="$(printf '%s\n' "$HOOK" | sed -n '2p' | sed 's/.*[" ]hook//')"
+        LEGACY=1
+        for arg in $ARGS; do
+            case "$arg" in
+                --rotate=next-available | --sync-orca | --detach-orca | --rotate=on-limit | --rotate | --reserve=15) ;;
+                *) LEGACY=0 ;;
+            esac
+        done
+        if [ -n "$(printf '%s' "$ARGS" | tr -d ' ')" ] && [ "$LEGACY" = 1 ]; then
+            "$CSWAP" hook install </dev/null >/dev/null
+            say "Rotation hook: on, moved from old defaults ($(echo $ARGS)) to the new one:"
+            say "  checks every prompt, switches only when the account is at its limit"
+        else
+            say "Rotation hook: on (unchanged)"
+        fi
+        ;;
     *) warn "Rotation hook is off. Turn it on with: cswap hook install" ;;
 esac
 
