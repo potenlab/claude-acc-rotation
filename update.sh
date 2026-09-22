@@ -36,7 +36,7 @@ BEFORE="$("$CSWAP" --version 2>/dev/null | awk '{print $NF}')"
 
 if command -v uv >/dev/null 2>&1 && uv tool list 2>/dev/null | grep -q '^claude-swap '; then
     say "Updating cswap from ${SOURCE}"
-    uv tool install --force --python 3.12 "$SOURCE"
+    uv tool install --force --refresh --python 3.12 "$SOURCE"
 elif command -v pipx >/dev/null 2>&1 && pipx list 2>/dev/null | grep -q 'claude-swap'; then
     say "Updating cswap from ${SOURCE} (pipx)"
     pipx install --force "$SOURCE"

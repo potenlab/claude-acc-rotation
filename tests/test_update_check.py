@@ -278,7 +278,7 @@ class TestRunSelfUpgrade:
 
         assert run_self_upgrade() == 0
         mock_run.assert_called_once_with(
-            ["uv", "tool", "install", "--force", "--python", "3.12",
+            ["uv", "tool", "install", "--force", "--refresh", "--python", "3.12",
              "git+https://github.com/potenlab/claude-acc-rotation@main"], check=False
         )
 
@@ -308,7 +308,7 @@ class TestRunSelfUpgrade:
         assert run_self_upgrade() == 1
         mock_run.assert_not_called()
         err = capsys.readouterr().err
-        assert "uv tool install --force --python 3.12 git+https://github.com/potenlab/claude-acc-rotation@main" in err
+        assert "uv tool install --force --refresh --python 3.12 git+https://github.com/potenlab/claude-acc-rotation@main" in err
         assert "pipx install --force git+https://github.com/potenlab/claude-acc-rotation@main" in err
         assert "pip install --upgrade git+https://github.com/potenlab/claude-acc-rotation@main" in err
 
@@ -333,7 +333,7 @@ class TestRunSelfUpgradeWindows:
         assert run_self_upgrade() == 1
         mock_run.assert_not_called()
         out = capsys.readouterr().out
-        assert "uv tool install --force --python 3.12 git+https://github.com/potenlab/claude-acc-rotation@main" in out
+        assert "uv tool install --force --refresh --python 3.12 git+https://github.com/potenlab/claude-acc-rotation@main" in out
 
     @patch("claude_swap.update_check.subprocess.run")
     @patch("claude_swap.update_check._detect_install_method", return_value="pipx")
@@ -349,6 +349,6 @@ class TestRunSelfUpgradeWindows:
         assert run_self_upgrade() == 1
         mock_run.assert_not_called()
         err = capsys.readouterr().err
-        assert "uv tool install --force --python 3.12 git+https://github.com/potenlab/claude-acc-rotation@main" in err
+        assert "uv tool install --force --refresh --python 3.12 git+https://github.com/potenlab/claude-acc-rotation@main" in err
         assert "pipx install --force git+https://github.com/potenlab/claude-acc-rotation@main" in err
         assert "pip install --upgrade git+https://github.com/potenlab/claude-acc-rotation@main" in err

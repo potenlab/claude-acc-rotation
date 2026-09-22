@@ -132,7 +132,7 @@ def check_for_update(current_version: str) -> str | None:
         if latest_version and _is_newer(latest_version, current_version):
             method = _detect_install_method()
             direct = {
-                "uv": f"uv tool install --force --python 3.12 {FORK_SOURCE}",
+                "uv": f"uv tool install --force --refresh --python 3.12 {FORK_SOURCE}",
                 "pipx": f"pipx install --force {FORK_SOURCE}",
             }.get(method or "")
             if direct and sys.platform != "win32":
@@ -166,7 +166,9 @@ def run_self_upgrade() -> int:
     # whatever source the tool was first installed from (a local checkout, or
     # the original PyPI project), which is not what this command promises.
     commands = {
-        "uv": ["uv", "tool", "install", "--force", "--python", "3.12", FORK_SOURCE],
+        # --refresh: uv caches what `@main` resolved to, and would otherwise
+        # happily "upgrade" to the commit it installed last time.
+        "uv": ["uv", "tool", "install", "--force", "--refresh", "--python", "3.12", FORK_SOURCE],
         "pipx": ["pipx", "install", "--force", FORK_SOURCE],
     }
     cmd = commands.get(method or "")
@@ -176,7 +178,7 @@ def run_self_upgrade() -> int:
             f"  sys.prefix:     {sys.prefix}\n"
             f"  sys.executable: {sys.executable}\n"
             "To upgrade manually, run one of:\n"
-            f"  uv tool install --force --python 3.12 {FORK_SOURCE}\n"
+            f"  uv tool install --force --refresh --python 3.12 {FORK_SOURCE}\n"
             f"  pipx install --force {FORK_SOURCE}\n"
             f"  {sys.executable} -m pip install --upgrade {FORK_SOURCE}\n"
             "If you installed with `pip install -e .`, use `git pull` instead."

@@ -36,7 +36,7 @@ fi
 
 # 2. cswap
 say "Installing cswap from ${SOURCE}"
-uv tool install --force --python 3.12 "$SOURCE"
+uv tool install --force --refresh --python 3.12 "$SOURCE"
 BIN_DIR="$(uv tool dir --bin)"
 PATH="$BIN_DIR:$PATH"
 export PATH
