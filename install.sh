@@ -61,5 +61,6 @@ Done. To add your other accounts, for each one:
 
 Then check everything with:  cswap list
 ("cswap: command not found"? run 'uv tool update-shell' and open a new terminal)
+Update:                      curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/update.sh | sh
 Uninstall (keeps accounts):  curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/uninstall.sh | sh
 EOF

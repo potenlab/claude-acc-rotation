@@ -1,4 +1,10 @@
-"""Check PyPI for newer versions of claude-swap."""
+"""Check this fork's GitHub repo for newer versions of cswap.
+
+This is potenlab/claude-acc-rotation, a fork of claude-swap that keeps the
+package name. Checking PyPI would compare against the ORIGINAL project and
+advertise an "update" that is really a different tool, so both the notice and
+``cswap upgrade`` point at the fork's own ``main`` branch instead.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +21,19 @@ from claude_swap.cache import CACHE_DIR, MISSING, read_cache, write_cache
 
 CACHE_PATH = CACHE_DIR / "update_check.json"
 CACHE_TTL = 24 * 3600  # 24 hours
-PYPI_URL = "https://pypi.org/pypi/claude-swap/json"
+REPO = "potenlab/claude-acc-rotation"
+FORK_SOURCE = f"git+https://github.com/{REPO}@main"
+VERSION_URL = f"https://raw.githubusercontent.com/{REPO}/main/pyproject.toml"
+_PYPROJECT_VERSION_RE = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def fetch_latest_version(timeout: float = 2.0) -> str | None:
+    """The version on the fork's main branch (from its pyproject.toml)."""
+    req = urllib.request.Request(VERSION_URL, headers={"User-Agent": "claude-swap"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8", "replace")
+    m = _PYPROJECT_VERSION_RE.search(text)
+    return m.group(1) if m else None
 
 _VERSION_RE = re.compile(
     r"(\d+(?:\.\d+)*)(?:[-_.]?(alpha|beta|preview|pre|rc|a|b|c)[-_.]?(\d+)?)?",
@@ -102,12 +120,9 @@ def check_for_update(current_version: str) -> str | None:
         if cached_data is not MISSING:
             latest_version = cached_data
         else:
-            # Fetch from PyPI
+            # Fetch from the fork's GitHub main branch
             try:
-                req = urllib.request.Request(PYPI_URL)
-                with urllib.request.urlopen(req, timeout=2) as resp:
-                    data = json.loads(resp.read().decode())
-                latest_version = data["info"]["version"]
+                latest_version = fetch_latest_version()
             except Exception:
                 latest_version = None
 
@@ -117,8 +132,8 @@ def check_for_update(current_version: str) -> str | None:
         if latest_version and _is_newer(latest_version, current_version):
             method = _detect_install_method()
             direct = {
-                "uv": "uv tool upgrade claude-swap",
-                "pipx": "pipx upgrade claude-swap",
+                "uv": f"uv tool install --force --python 3.12 {FORK_SOURCE}",
+                "pipx": f"pipx install --force {FORK_SOURCE}",
             }.get(method or "")
             if direct and sys.platform != "win32":
                 # cswap upgrade actually performs the upgrade here.
@@ -130,7 +145,7 @@ def check_for_update(current_version: str) -> str | None:
                 # Unknown install method: cswap upgrade shows manual instructions.
                 hint = "Run `cswap upgrade` for upgrade instructions."
             return (
-                f"A newer version of claude-swap is available ({latest_version}). "
+                f"A newer version of cswap is available ({latest_version}). "
                 f"You are using {current_version}. {hint}"
             )
         return None
@@ -147,9 +162,12 @@ def run_self_upgrade() -> int:
     from claude_swap.printer import accent, error
 
     method = _detect_install_method()
+    # Reinstall from the fork: `uv tool upgrade` / `pipx upgrade` would keep
+    # whatever source the tool was first installed from (a local checkout, or
+    # the original PyPI project), which is not what this command promises.
     commands = {
-        "uv": ["uv", "tool", "upgrade", "claude-swap"],
-        "pipx": ["pipx", "upgrade", "claude-swap"],
+        "uv": ["uv", "tool", "install", "--force", "--python", "3.12", FORK_SOURCE],
+        "pipx": ["pipx", "install", "--force", FORK_SOURCE],
     }
     cmd = commands.get(method or "")
     if cmd is None:
@@ -158,9 +176,9 @@ def run_self_upgrade() -> int:
             f"  sys.prefix:     {sys.prefix}\n"
             f"  sys.executable: {sys.executable}\n"
             "To upgrade manually, run one of:\n"
-            "  uv tool upgrade claude-swap\n"
-            "  pipx upgrade claude-swap\n"
-            f"  {sys.executable} -m pip install --upgrade claude-swap\n"
+            f"  uv tool install --force --python 3.12 {FORK_SOURCE}\n"
+            f"  pipx install --force {FORK_SOURCE}\n"
+            f"  {sys.executable} -m pip install --upgrade {FORK_SOURCE}\n"
             "If you installed with `pip install -e .`, use `git pull` instead."
         )
         return 1

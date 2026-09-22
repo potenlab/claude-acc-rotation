@@ -19,6 +19,14 @@ No flags or config needed — out of the box, every prompt:
 
 Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`. (After a later `/login` with an account cswap already knows, the next prompt saves it by itself.)
 
+To update to the latest version — accounts, settings and the hook stay exactly as they are, and open Claude Code sessions use the new version from their next prompt:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/update.sh | sh
+```
+
+(`cswap upgrade` does the same. cswap also tells you when a new version is out.)
+
 To uninstall, which **keeps your saved accounts** so a reinstall brings rotation straight back:
 
 ```bash
