@@ -327,15 +327,13 @@ class TestMinIntervalDefaults:
     def test_unset_reserve_is_not_forwarded(self):
         """No flag -> the installed command stays free of it, so hook.reserve
         (read at every run) governs already-open sessions too."""
-        assert prompt_hook._forwarded_options(_args(no_detach_orca=False, rotate="next-available", min_interval=0)) == [
-            "--rotate=next-available"
-        ]
+        assert prompt_hook._forwarded_options(_args(no_detach_orca=False, rotate="next-available", min_interval=0)) == []
 
     def test_custom_reserve_is_forwarded(self):
         opts = prompt_hook._forwarded_options(
             _args(no_detach_orca=False, rotate="next-available", min_interval=0, reserve=10.0)
         )
-        assert opts == ["--rotate=next-available", "--reserve=10"]
+        assert opts == ["--reserve=10"]
 
     def test_explicit_min_interval_is_forwarded(self):
         opts = prompt_hook._forwarded_options(_args(no_detach_orca=False, rotate="best", min_interval=5.0))
@@ -547,12 +545,12 @@ class TestPickOnLimit:
         sw.switch_to.assert_not_called()
         assert "no other account has room" in msg
 
-    def test_bare_rotate_means_on_limit(self):
+    def test_bare_rotate_means_the_default_mode(self):
         seen = {}
         with patch.object(prompt_hook, "run_hook", side_effect=lambda a: seen.setdefault("rotate", a.rotate) and 0):
             with pytest.raises(SystemExit):
                 prompt_hook.hook_command_main(["--rotate"])
-        assert seen["rotate"] == "on-limit"
+        assert seen["rotate"] == prompt_hook.DEFAULT_MODE == "next-available"
 
 
 class TestFirstPromptLoginCheck:

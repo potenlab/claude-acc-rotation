@@ -119,6 +119,28 @@ class TestRender:
         assert not (backup / statusline.LAST_SWITCH_FILENAME).exists()
 
 
+class TestNextFollowsTheMode:
+    def _seq(self):
+        return {"sequence": [1, 2, 3, 4], "accounts": {n: {"email": f"{n}@e"} for n in "1234"}}
+
+    def _usage(self):
+        # 2: 60% left, 3: 5% left (held out), 4: 90% left
+        return {"accounts": {
+            "2": {"lastGood": {"five_hour": {"pct": 40}, "seven_day": {"pct": 0}}},
+            "3": {"lastGood": {"five_hour": {"pct": 95}, "seven_day": {"pct": 0}}},
+            "4": {"lastGood": {"five_hour": {"pct": 10}, "seven_day": {"pct": 0}}},
+        }}
+
+    def test_next_available_walks_the_rotation_order(self):
+        assert statusline._next_account(self._seq(), self._usage(), "1", "next-available") == "2"
+
+    def test_rotation_order_wraps_and_skips_held_out(self):
+        assert statusline._next_account(self._seq(), self._usage(), "2", "next-available") == "4"
+
+    def test_on_limit_picks_the_most_room(self):
+        assert statusline._next_account(self._seq(), self._usage(), "1", "on-limit") == "4"
+
+
 class TestInstall:
     def _settings(self, config: Path) -> dict:
         return json.loads((config / "settings.json").read_text())

@@ -37,8 +37,10 @@ DEFAULT_MIN_INTERVAL = 20.0
 # --rotate never lands on an account with less than this much quota left: one
 # at 98% would hit its limit on the very next message.
 DEFAULT_RESERVE = 15.0
-# What a bare `cswap hook` does: check every prompt, switch only at the limit.
-DEFAULT_MODE = "on-limit"
+# What a bare `cswap hook` does: move to the next account that still has room
+# on every prompt, spreading the work across all accounts. Accounts within
+# the reserve of a limit, with a dead login, or disabled are skipped.
+DEFAULT_MODE = "next-available"
 STAMP_FILENAME = "prompt_hook_last_run"
 SESSIONS_FILENAME = "prompt_hook_sessions.json"
 _SESSIONS_KEPT = 200
@@ -631,17 +633,16 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rotate",
         nargs="?",
-        const="on-limit",
+        const=DEFAULT_MODE,
         choices=("on-limit", "next-available", "best", "plain", "threshold"),
         default=None,
         help=(
-            "How to switch (default: on-limit, no flag needed). "
-            "Check on EVERY prompt. 'on-limit' stays on the current "
-            "account while it has more than --reserve left and only then moves "
-            "to the account with the most room; 'next-available' rotates every "
-            "prompt, skipping limited accounts; 'best' takes the most quota "
-            "left; 'plain' rotates blindly; 'threshold' is the auto-switch "
-            "engine (switch near autoswitch.threshold, with cooldown)"
+            "How to switch (default: next-available, no flag needed). "
+            "'next-available' moves to the next account with room on EVERY "
+            "prompt, skipping any within --reserve of a limit; 'on-limit' "
+            "stays on the current account until it is at its limit; 'best' "
+            "takes the most quota left; 'plain' rotates blindly; 'threshold' "
+            "is the auto-switch engine (near autoswitch.threshold, cooldown)"
         ),
     )
     parser.add_argument(

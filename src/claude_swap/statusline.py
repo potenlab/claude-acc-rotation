@@ -98,11 +98,36 @@ def _headroom(five: float | None, seven: float | None) -> float | None:
     return 100.0 - max(known) if known else None
 
 
-def _next_account(sequence: dict, usage: dict, current: str | None) -> str | None:
-    """The account the hook would move to if the current one ran out."""
+def hook_mode() -> str:
+    """The installed hook's switching mode (``--rotate=X``, else the default)."""
+    try:
+        import shlex
+
+        from claude_swap.prompt_hook import DEFAULT_MODE, claude_settings_path, installed_command
+
+        command = installed_command(claude_settings_path()) or ""
+        for arg in shlex.split(command):
+            if arg.startswith("--rotate="):
+                return arg.split("=", 1)[1]
+        return DEFAULT_MODE
+    except Exception:
+        return "next-available"
+
+
+def _next_account(
+    sequence: dict, usage: dict, current: str | None, mode: str = "next-available"
+) -> str | None:
+    """The account the hook would move to next.
+
+    ``next-available`` / ``plain`` walk the rotation order from the current
+    account; every other mode picks the account with the most room.
+    """
+    order = [str(n) for n in sequence.get("sequence") or []]
+    if mode in ("next-available", "plain") and current in order:
+        i = order.index(current)
+        order = order[i + 1:] + order[:i]
     best, best_room = None, None
-    for raw in sequence.get("sequence") or []:
-        num = str(raw)
+    for num in order:
         record = (sequence.get("accounts") or {}).get(num) or {}
         if num == current or record.get("disabled"):
             continue
@@ -110,6 +135,8 @@ def _next_account(sequence: dict, usage: dict, current: str | None) -> str | Non
         room = _headroom(five, seven)
         if dead or room is None or room <= RESERVE:
             continue
+        if mode in ("next-available", "plain"):
+            return num
         if best_room is None or room > best_room:
             best, best_room = num, room
     return best
@@ -159,7 +186,7 @@ def render(payload: dict, backup_dir: Path, now: float | None = None, colour: bo
         _fmt("7d", seven, colour),
     ]
     room = _headroom(five, seven)
-    nxt = _next_account(sequence, usage, current)
+    nxt = _next_account(sequence, usage, current, hook_mode())
     if nxt:
         parts.append(f"next Account-{nxt}")
     elif room is not None and room <= RESERVE:

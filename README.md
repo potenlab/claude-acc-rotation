@@ -12,8 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/i
 
 No flags or config needed — out of the box, every prompt:
 
-- checks the current account and **stays on it while it has more than 15% left**;
-- at its limit, moves to the account with the most room (never onto one near its limit, with a dead login, or disabled);
+- **moves to the next account that still has room**, spreading the work across all of them. Accounts with 15% or less left, a dead login, or disabled are skipped until they recover;
 - on a session's first prompt, confirms with the server that your login still works, and moves off it if it was revoked;
 - keeps the Orca app from overwriting the login, if you use Orca.
 
@@ -226,20 +225,19 @@ cswap hook uninstall                    # remove it (other hooks are left alone)
 - The switch applies to your next request. On macOS, Claude Code caches Keychain credentials for about 30 seconds (see [Tips](#tips)).
 #### Check on every prompt
 
-`--rotate` checks the current account on every prompt, and **only switches when it has to**:
+By default every prompt **moves to the next account that still has room**, so the work is spread across all your accounts instead of draining one at a time:
 
 ```bash
 cswap hook install                           # the default: no flags needed
 ```
 
-- Current account has more than 15% left (`hook.reserve`) → stay. No switch, no message.
-- Current account is at its limit, or its login is dead → move to the account with the **most room left**. Accounts near their own limit, dead, disabled or with unreadable usage are never picked.
-- No account has room → stay, and say so.
+- Accounts with 15% or less left (`hook.reserve`), a dead login, or disabled are skipped, and come back once they recover.
+- If no other account has room, it stays on the current one and says so.
 
-Staying put matters: every switch makes the next message rebuild its conversation cache (extra quota), and on macOS a switch takes ~30 s to reach running sessions. The other modes switch far more often:
+The trade-off: every switch makes the next message rebuild its conversation cache (extra tokens), and on macOS a switch takes ~30 s to reach running sessions, so prompts sent faster than that may still land on the previous account. The login is shared by the whole machine, so this spreads usage **over time**; to run two sessions on two accounts at once, use [`cswap run`](#run-multiple-accounts-at-the-same-time-session-mode). Other modes:
 
 ```bash
-cswap hook install --rotate=next-available   # move to the next account on EVERY prompt
+cswap hook install --rotate=on-limit         # stay until the account is at its limit
 cswap hook install --rotate=best             # jump whenever another account has more room
 cswap hook install --rotate=plain            # rotate blindly, ignoring usage
 ```
