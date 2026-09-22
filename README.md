@@ -17,6 +17,14 @@ No flags or config needed — out of the box, every prompt:
 - on a session's first prompt, confirms with the server that your login still works, and moves off it if it was revoked;
 - keeps the Orca app from overwriting the login, if you use Orca.
 
+- shows the active account **under the Claude Code prompt**:
+
+  ```
+  ⇄ Account-1 you@example.com · 5h 26% · 7d 50% · next Account-3
+  ```
+
+  `next` is where it would move when this account runs out; right after a switch you also see `↻ from Account-4 1m ago`. If another tool (Orca, for one) already had the status line, it keeps running alongside — and comes back if you uninstall.
+
 Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`. (After a later `/login` with an account cswap already knows, the next prompt saves it by itself.)
 
 To update to the latest version — accounts, settings and the hook stay exactly as they are, and open Claude Code sessions use the new version from their next prompt:

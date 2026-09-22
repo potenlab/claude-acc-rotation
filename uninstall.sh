@@ -51,6 +51,7 @@ fi
 # 1. The per-prompt hook (other hooks and settings are left alone)
 say "Removing the per-prompt rotation hook"
 "$CSWAP" hook uninstall </dev/null || warn "could not remove the hook; run 'cswap hook uninstall' by hand"
+"$CSWAP" statusline uninstall </dev/null >/dev/null 2>&1 || true   # restores the previous status line
 
 # 2. Saved accounts: kept unless --purge
 if [ "$PURGE" = 1 ]; then

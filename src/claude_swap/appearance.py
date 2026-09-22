@@ -179,7 +179,7 @@ def cli_should_probe(argv: list[str], *, colors_enabled: bool) -> bool:
     """
     if not colors_enabled:
         return False
-    if argv and argv[0] in ("run", "hook"):
+    if argv and argv[0] in ("run", "hook", "statusline"):
         return False
     if "--json" in argv:
         return False

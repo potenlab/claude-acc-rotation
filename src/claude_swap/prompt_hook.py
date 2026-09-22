@@ -394,6 +394,10 @@ def run_hook(args: argparse.Namespace) -> int:
         if _in_session_profile(switcher.backup_dir):
             return 0
 
+        try:
+            before = switcher.current_account_number()
+        except Exception:
+            before = None
         # An attached Orca would revert any switch below.
         orca_note = _keep_orca_detached(args)
         if orca_note:
@@ -434,6 +438,13 @@ def run_hook(args: argparse.Namespace) -> int:
                 message = _system_message(events)
             if message:
                 notes.insert(0, message.removeprefix("cswap: "))
+        if notes:
+            try:
+                from claude_swap.statusline import record_switch
+
+                record_switch(switcher.backup_dir, before, switcher.current_account_number())
+            except Exception:
+                pass
     except Exception as e:  # never break the user's prompt
         if args.debug:
             print(f"cswap hook: {e}", file=sys.stderr)

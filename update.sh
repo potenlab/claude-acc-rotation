@@ -77,6 +77,18 @@ case "$HOOK" in
     *) warn "Rotation hook is off. Turn it on with: cswap hook install" ;;
 esac
 
+# The status line (active account under the prompt) arrived in a later
+# release: add it for anyone who has rotation on but not the line yet.
+case "$HOOK" in
+    Installed*)
+        if [ "$("$CSWAP" statusline status 2>/dev/null)" != "installed" ]; then
+            "$CSWAP" statusline install </dev/null >/dev/null 2>&1 \
+                && say "Status line: added (the active account now shows under the prompt)" \
+                || warn "could not add the status line; run 'cswap statusline install'"
+        fi
+        ;;
+esac
+
 echo
 echo "Done. Your saved accounts and settings are unchanged."
 echo "Open Claude Code sessions use the new version from their next prompt."

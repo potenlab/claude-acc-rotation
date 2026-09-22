@@ -46,6 +46,9 @@ command -v cswap >/dev/null 2>&1 || die "cswap was not found in ${BIN_DIR}"
 say "Enabling account rotation on every Claude Code prompt"
 cswap hook install "$@" </dev/null
 
+say "Showing the active account under the Claude Code prompt"
+cswap statusline install </dev/null >/dev/null || warn "could not install the status line; run 'cswap statusline install' by hand"
+
 # 4. the account Claude Code is logged into right now
 if [ "${CSWAP_NO_ADD:-0}" != 1 ]; then
     say "Adding the currently logged-in Claude account"
