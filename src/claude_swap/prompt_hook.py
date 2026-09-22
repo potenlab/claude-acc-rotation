@@ -249,6 +249,16 @@ def _system_message(events: list) -> str | None:
     return None
 
 
+def _models(args: argparse.Namespace, switcher) -> tuple[str, ...]:
+    """Per-model weekly windows to fold in: --model, else autoswitch.model."""
+    try:
+        from claude_swap.settings import load_settings, parse_model_names
+
+        return parse_model_names(args.model or load_settings(switcher.backup_dir).model)
+    except Exception:
+        return ()
+
+
 def _reserve(args: argparse.Namespace, switcher) -> float:
     """The flag if given, else ``hook.reserve`` — read fresh on every run.
 
@@ -266,13 +276,79 @@ def _reserve(args: argparse.Namespace, switcher) -> float:
         return DEFAULT_RESERVE
 
 
-def _rotate(switcher, strategy: str, reserve: float = DEFAULT_RESERVE) -> str | None:
+def pick_on_limit(
+    usage: dict, current: str | None, candidates: list[str], reserve: float,
+    models: tuple[str, ...] = (),
+) -> tuple[str | None, str]:
+    """Decide ``--rotate=on-limit``: stay while the current account has room.
+
+    Returns ``(target, why)``. ``target`` is None unless a switch is needed:
+
+    - ``"stay"``: the current account has more than ``reserve`` % left.
+    - ``"unknown"``: its usage can't be read right now; never act on a guess.
+    - ``"limit"`` / ``"dead"``: it is within ``reserve`` of a limit, or its
+      saved login is dead, and ``target`` is the candidate with the most
+      headroom above ``reserve``.
+    - ``"exhausted"``: a switch is needed but no candidate qualifies.
+    """
+    from claude_swap import oauth
+    from claude_swap.switcher import _UNUSABLE_USAGE
+
+    now = usage.get(current) if current is not None else None
+    if isinstance(now, str) and now in _UNUSABLE_USAGE:
+        need = "dead"
+    elif isinstance(now, dict):
+        headroom = oauth.account_headroom(now, models)
+        if headroom is None or headroom > reserve:
+            return None, "stay"
+        need = "limit"
+    else:
+        return None, "unknown"
+
+    best, best_headroom = None, None
+    for num in candidates:
+        value = usage.get(num)
+        if not isinstance(value, dict):
+            continue  # dead, unreadable or unknown: not a safe landing
+        headroom = oauth.account_headroom(value, models)
+        if headroom is None or headroom <= reserve:
+            continue
+        if best_headroom is None or headroom > best_headroom:
+            best, best_headroom = num, headroom
+    return (best, need) if best is not None else (None, "exhausted")
+
+
+def _rotate_on_limit(switcher, reserve: float, models: tuple[str, ...]) -> str | None:
+    current = switcher.current_account_number()
+    data = switcher._get_sequence_data() or {}
+    candidates = [
+        str(n) for n in data.get("sequence", [])
+        if str(n) != str(current)
+        and not switcher._disabled_from_data(data, str(n))
+        and switcher._account_is_switchable(str(n))
+    ]
+    usage = switcher._usage_by_account()
+    target, why = pick_on_limit(usage, current, candidates, reserve, models)
+    here = f"Account-{current}"
+    if target is not None:
+        result = switcher.switch_to(target, json_output=True)
+        moved = (result or {}).get("message", f"Switched to Account-{target}")
+        cause = "is at its limit" if why == "limit" else "needs a re-login"
+        return f"cswap: {here} {cause} — {moved}"
+    if why == "exhausted":
+        return f"cswap: {here} is at its limit and no other account has room — staying"
+    return None
+
+
+def _rotate(switcher, strategy: str, reserve: float = DEFAULT_RESERVE, models: tuple[str, ...] = ()) -> str | None:
     """Rotate to another account on every prompt; return a message or None.
 
     ``next-available`` skips any account within ``reserve`` % of a 5h/7d limit
     — held out until its window resets, then used again — ``best`` jumps to the
     most quota left, and ``plain`` ignores usage entirely.
     """
+    if strategy == "on-limit":
+        return _rotate_on_limit(switcher, reserve, models)
     if strategy == "next-available":
         result = switcher.switch(
             strategy=strategy, json_output=True, reserve=reserve
@@ -335,7 +411,10 @@ def run_hook(args: argparse.Namespace) -> int:
                 message = (
                     f"cswap: [dry-run] would rotate ({args.rotate})"
                     if args.dry_run
-                    else _rotate(switcher, args.rotate, _reserve(args, switcher))
+                    else _rotate(
+                        switcher, args.rotate, _reserve(args, switcher),
+                        _models(args, switcher),
+                    )
                 )
             else:
                 events: list = []
@@ -527,14 +606,15 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rotate",
         nargs="?",
-        const="next-available",
-        choices=("next-available", "best", "plain"),
+        const="on-limit",
+        choices=("on-limit", "next-available", "best", "plain"),
         default=None,
         help=(
-            "Switch on EVERY prompt instead of waiting for a usage threshold: "
-            "'next-available' rotates but skips accounts at their limit "
-            "(default), 'best' takes the most quota left, 'plain' rotates "
-            "blindly. Implies --min-interval 0"
+            "Check on EVERY prompt. 'on-limit' (default) stays on the current "
+            "account while it has more than --reserve left and only then moves "
+            "to the account with the most room; 'next-available' rotates every "
+            "prompt, skipping limited accounts; 'best' takes the most quota "
+            "left; 'plain' rotates blindly. Implies --min-interval 0"
         ),
     )
     parser.add_argument(

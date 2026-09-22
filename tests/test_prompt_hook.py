@@ -469,6 +469,86 @@ class TestUninstalledMeansOff(TestRunHook):
         switcher.switch.assert_not_called()
 
 
+def _u(pct: float) -> dict:
+    return {"five_hour": {"pct": pct}, "seven_day": {"pct": 0.0}}
+
+
+class TestPickOnLimit:
+    """--rotate=on-limit: check every prompt, switch only at the limit."""
+
+    def test_stays_while_current_has_room(self):
+        usage = {"1": _u(40), "2": _u(0)}
+        assert prompt_hook.pick_on_limit(usage, "1", ["2"], 15) == (None, "stay")
+
+    def test_switches_at_the_limit_to_most_room(self):
+        usage = {"1": _u(90), "2": _u(60), "3": _u(10)}
+        assert prompt_hook.pick_on_limit(usage, "1", ["2", "3"], 15) == ("3", "limit")
+
+    def test_never_lands_on_a_near_limit_account(self):
+        usage = {"1": _u(100), "2": _u(90), "3": _u(97)}
+        assert prompt_hook.pick_on_limit(usage, "1", ["2", "3"], 15) == (None, "exhausted")
+
+    def test_skips_dead_and_unknown_candidates(self):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        usage = {"1": _u(100), "2": USAGE_RELOGIN_REQUIRED, "3": None, "4": _u(50)}
+        assert prompt_hook.pick_on_limit(usage, "1", ["2", "3", "4"], 15) == ("4", "limit")
+
+    def test_dead_current_login_moves_even_with_quota(self):
+        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+
+        usage = {"1": USAGE_RELOGIN_REQUIRED, "2": _u(20)}
+        assert prompt_hook.pick_on_limit(usage, "1", ["2"], 15) == ("2", "dead")
+
+    def test_unknown_current_usage_never_acts(self):
+        usage = {"1": None, "2": _u(0)}
+        assert prompt_hook.pick_on_limit(usage, "1", ["2"], 15) == (None, "unknown")
+
+    def test_exactly_at_reserve_counts_as_limit(self):
+        usage = {"1": _u(85), "2": _u(0)}
+        assert prompt_hook.pick_on_limit(usage, "1", ["2"], 15) == ("2", "limit")
+
+    def test_rotate_on_limit_reports_the_switch(self):
+        sw = MagicMock()
+        sw.current_account_number.return_value = "1"
+        sw._get_sequence_data.return_value = {"sequence": [1, 2]}
+        sw._disabled_from_data.return_value = False
+        sw._account_is_switchable.return_value = True
+        sw._usage_by_account.return_value = {"1": _u(95), "2": _u(10)}
+        sw.switch_to.return_value = {"switched": True, "message": "Switched to Account-2 (b@e)"}
+        msg = prompt_hook._rotate(sw, "on-limit", 15)
+        sw.switch_to.assert_called_once_with("2", json_output=True)
+        assert msg == "cswap: Account-1 is at its limit — Switched to Account-2 (b@e)"
+
+    def test_rotate_on_limit_is_silent_while_there_is_room(self):
+        sw = MagicMock()
+        sw.current_account_number.return_value = "1"
+        sw._get_sequence_data.return_value = {"sequence": [1, 2]}
+        sw._disabled_from_data.return_value = False
+        sw._account_is_switchable.return_value = True
+        sw._usage_by_account.return_value = {"1": _u(30), "2": _u(0)}
+        assert prompt_hook._rotate(sw, "on-limit", 15) is None
+        sw.switch_to.assert_not_called()
+
+    def test_disabled_accounts_are_not_candidates(self):
+        sw = MagicMock()
+        sw.current_account_number.return_value = "1"
+        sw._get_sequence_data.return_value = {"sequence": [1, 2]}
+        sw._disabled_from_data.side_effect = lambda data, n: n == "2"
+        sw._account_is_switchable.return_value = True
+        sw._usage_by_account.return_value = {"1": _u(95), "2": _u(0)}
+        msg = prompt_hook._rotate(sw, "on-limit", 15)
+        sw.switch_to.assert_not_called()
+        assert "no other account has room" in msg
+
+    def test_bare_rotate_means_on_limit(self):
+        seen = {}
+        with patch.object(prompt_hook, "run_hook", side_effect=lambda a: seen.setdefault("rotate", a.rotate) and 0):
+            with pytest.raises(SystemExit):
+                prompt_hook.hook_command_main(["--rotate"])
+        assert seen["rotate"] == "on-limit"
+
+
 class TestFirstPromptLoginCheck:
     """The first prompt of each session must not go out on a revoked login."""
 

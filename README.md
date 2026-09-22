@@ -201,17 +201,33 @@ cswap hook uninstall                    # remove it (other hooks are left alone)
 - It runs at most once every 20 seconds (`--min-interval`), however many sessions are open. Usage is still read on the adaptive schedule described in [How it works](#how-it-works), so most prompts cost no API call.
 - It skips `cswap run` sessions, because those are pinned to one account.
 - The switch applies to your next request. On macOS, Claude Code caches Keychain credentials for about 30 seconds (see [Tips](#tips)).
-#### Rotate on every prompt
+#### Check on every prompt
 
-To move to another account on *every* prompt instead of waiting for a threshold:
+`--rotate` checks the current account on every prompt, and **only switches when it has to**:
 
 ```bash
-cswap hook install --rotate                  # rotate, skipping accounts at their limit
-cswap hook install --rotate=best             # always jump to the most quota left
+cswap hook install --rotate --detach-orca    # recommended
+```
+
+- Current account has more than 15% left (`hook.reserve`) → stay. No switch, no message.
+- Current account is at its limit, or its login is dead → move to the account with the **most room left**. Accounts near their own limit, dead, disabled or with unreadable usage are never picked.
+- No account has room → stay, and say so.
+
+Staying put matters: every switch makes the next message rebuild its conversation cache (extra quota), and on macOS a switch takes ~30 s to reach running sessions. The other modes switch far more often:
+
+```bash
+cswap hook install --rotate=next-available   # move to the next account on EVERY prompt
+cswap hook install --rotate=best             # jump whenever another account has more room
 cswap hook install --rotate=plain            # rotate blindly, ignoring usage
 ```
 
-Accounts near their limit are **held out until they reset**, then used again. By default `--rotate` skips any account with less than 5% of its 5h or 7d window left, so a rotation never lands on one that would run dry on the next message. Tune it with `--reserve`:
+Accounts near their limit are **held out until they reset**, then used again. The margin is `hook.reserve` (default 5; set it once and every open session follows):
+
+```bash
+cswap config set hook.reserve 15      # "at its limit" = less than 15% left
+```
+
+Or per install with `--reserve`:
 
 ```bash
 cswap hook install --rotate --reserve 10     # hold accounts back at 90% used
