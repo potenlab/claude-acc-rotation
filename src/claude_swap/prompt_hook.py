@@ -43,6 +43,10 @@ DEFAULT_RESERVE = 15.0
 DEFAULT_MODE = "next-available"
 STAMP_FILENAME = "prompt_hook_last_run"
 SESSIONS_FILENAME = "prompt_hook_sessions.json"
+NOTICE_FILENAME = "prompt_hook_last_notice.json"
+# "No other account has room" repeats on every prompt while it's true; say it
+# again only when it changes or after this long (the status line shows it).
+NOTICE_REPEAT_SECONDS = 1800
 _SESSIONS_KEPT = 200
 _MANAGEMENT_ACTIONS = {"install", "uninstall", "status"}
 # Identifies a hook entry we installed, in either launcher form:
@@ -371,9 +375,31 @@ def _rotate(switcher, strategy: str, reserve: float = DEFAULT_RESERVE, models: t
     if result.get("switched"):
         return f"cswap: {result.get('message', 'switched account')}"
     if result.get("reason") in ("candidates-exhausted", "relogin-required"):
-        # Every other account is held out; say so instead of failing silently.
-        return f"cswap: {result.get('message', 'all other accounts are at their limit')}"
+        # Every other account is held out; say so instead of failing silently
+        # — but not on every prompt.
+        message = f"cswap: {result.get('message', 'all other accounts are at their limit')}"
+        return message if _fresh_notice(switcher.backup_dir, message) else None
     return None
+
+
+def _fresh_notice(backup_dir: Path, message: str, now: float | None = None) -> bool:
+    """True unless this exact notice was shown within NOTICE_REPEAT_SECONDS."""
+    now = time.time() if now is None else now
+    path = backup_dir / NOTICE_FILENAME
+    try:
+        last = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        last = {}
+    if (
+        isinstance(last, dict) and last.get("message") == message
+        and isinstance(last.get("at"), (int, float)) and now - last["at"] < NOTICE_REPEAT_SECONDS
+    ):
+        return False
+    try:
+        path.write_text(json.dumps({"message": message, "at": now}), encoding="utf-8")
+    except OSError:
+        pass
+    return True
 
 
 def run_hook(args: argparse.Namespace) -> int:

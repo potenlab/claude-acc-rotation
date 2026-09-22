@@ -553,6 +553,33 @@ class TestPickOnLimit:
         assert seen["rotate"] == prompt_hook.DEFAULT_MODE == "next-available"
 
 
+class TestNoticeRepeats:
+    def test_same_notice_is_shown_once_per_window(self, tmp_path):
+        msg = "cswap: All other accounts are at their limit — staying on Account-1."
+        assert prompt_hook._fresh_notice(tmp_path, msg, now=1000) is True
+        assert prompt_hook._fresh_notice(tmp_path, msg, now=1060) is False
+        assert prompt_hook._fresh_notice(tmp_path, msg, now=1000 + prompt_hook.NOTICE_REPEAT_SECONDS) is True
+
+    def test_a_different_notice_is_shown_right_away(self, tmp_path):
+        assert prompt_hook._fresh_notice(tmp_path, "staying on Account-1", now=1000) is True
+        assert prompt_hook._fresh_notice(tmp_path, "staying on Account-3", now=1001) is True
+
+    def test_exhausted_rotation_is_quiet_the_second_time(self, tmp_path):
+        sw = MagicMock()
+        sw.backup_dir = tmp_path
+        sw.switch.return_value = {"switched": False, "reason": "candidates-exhausted",
+                                  "message": "All other accounts are at their limit — staying on Account-1."}
+        assert prompt_hook._rotate(sw, "next-available", 15) is not None
+        assert prompt_hook._rotate(sw, "next-available", 15) is None
+
+    def test_a_real_switch_is_always_reported(self, tmp_path):
+        sw = MagicMock()
+        sw.backup_dir = tmp_path
+        sw.switch.return_value = {"switched": True, "message": "Switched to Account-2 (b@e)"}
+        assert prompt_hook._rotate(sw, "next-available", 15)
+        assert prompt_hook._rotate(sw, "next-available", 15)
+
+
 class TestFirstPromptLoginCheck:
     """The first prompt of each session must not go out on a revoked login."""
 
