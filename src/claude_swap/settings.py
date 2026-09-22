@@ -67,12 +67,13 @@ class HookSettings:
     change takes effect in Claude Code sessions that are ALREADY OPEN — they
     captured the command line at startup and never see a reinstall.
 
-    ``reserve`` is the headroom a rotation candidate must still have: 5 skips
-    only accounts essentially at a limit, 15 also holds back one that would
-    run dry within a few messages. A flag on the command line wins over it.
+    ``reserve`` is the headroom an account must keep: at or below it the
+    current account counts as "at its limit", and no account at or below it
+    is switched onto. 15 holds back one that would run dry within a few
+    messages. A flag on the command line wins over it.
     """
 
-    reserve: float = 5.0
+    reserve: float = 15.0
 
 
 @dataclass(frozen=True)

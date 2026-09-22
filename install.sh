@@ -3,8 +3,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/install.sh | sh
 #
-# Flags after `sh -s --` go to `cswap hook install`, e.g.
-#   curl -fsSL .../install.sh | sh -s -- --threshold 80
+# Works out of the box: every prompt checks the current account and only
+# switches when it's at its limit. (Advanced: flags after `sh -s --` go to
+# `cswap hook install`.)
 #
 # Environment overrides:
 #   CSWAP_SOURCE  what to install (default: this repo's main branch on GitHub;

@@ -19,10 +19,11 @@ def _args(**overrides) -> argparse.Namespace:
         strategy=None,
         model=None,
         cooldown=None,
-        rotate=None,
+        rotate="threshold",
         skip_path=[],
         sync_orca=False,
         detach_orca=False,
+        no_detach_orca=True,
         reserve=None,
         force=True,
         min_interval=prompt_hook.DEFAULT_MIN_INTERVAL,
@@ -120,7 +121,8 @@ class TestInstall:
 
     def test_forwarded_options_round_trip(self):
         opts = prompt_hook._forwarded_options(
-            _args(threshold=80.0, strategy="consume-first", model="Fable,Opus", quiet=True)
+            _args(rotate=None, no_detach_orca=False, min_interval=0, threshold=80.0,
+                  strategy="consume-first", model="Fable,Opus", quiet=True)
         )
         assert opts == [
             "--threshold=80",
@@ -130,7 +132,9 @@ class TestInstall:
         ]
 
     def test_forwarded_options_keep_precision_and_dash_values(self):
-        opts = prompt_hook._forwarded_options(_args(cooldown=1234567.0, model="-foo"))
+        opts = prompt_hook._forwarded_options(
+            _args(rotate=None, no_detach_orca=False, min_interval=0, cooldown=1234567.0, model="-foo")
+        )
         assert opts == ["--model=-foo", "--cooldown=1234567"]
 
     def test_windows_upper_case_exe_is_recognised(self):
@@ -248,7 +252,7 @@ class TestRotateMode(TestRunHook):
         )
         engine.tick.assert_not_called()
         switcher.switch.assert_called_once_with(
-            strategy="next-available", json_output=True, reserve=5.0
+            strategy="next-available", json_output=True, reserve=15.0
         )
         assert "Account-2" in json.loads(capsys.readouterr().out)["systemMessage"]
 
@@ -317,24 +321,24 @@ class TestMinIntervalDefaults:
         assert args.min_interval == prompt_hook.DEFAULT_MIN_INTERVAL
 
     def test_rotate_forwards_without_redundant_min_interval(self):
-        opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=0))
+        opts = prompt_hook._forwarded_options(_args(no_detach_orca=False, rotate="best", min_interval=0))
         assert opts == ["--rotate=best"]
 
     def test_unset_reserve_is_not_forwarded(self):
         """No flag -> the installed command stays free of it, so hook.reserve
         (read at every run) governs already-open sessions too."""
-        assert prompt_hook._forwarded_options(_args(rotate="next-available", min_interval=0)) == [
+        assert prompt_hook._forwarded_options(_args(no_detach_orca=False, rotate="next-available", min_interval=0)) == [
             "--rotate=next-available"
         ]
 
     def test_custom_reserve_is_forwarded(self):
         opts = prompt_hook._forwarded_options(
-            _args(rotate="next-available", min_interval=0, reserve=10.0)
+            _args(no_detach_orca=False, rotate="next-available", min_interval=0, reserve=10.0)
         )
         assert opts == ["--rotate=next-available", "--reserve=10"]
 
     def test_explicit_min_interval_is_forwarded(self):
-        opts = prompt_hook._forwarded_options(_args(rotate="best", min_interval=5.0))
+        opts = prompt_hook._forwarded_options(_args(no_detach_orca=False, rotate="best", min_interval=5.0))
         assert opts == ["--rotate=best", "--min-interval=5"]
 
 
@@ -383,7 +387,9 @@ class TestOptOut(TestRunHook):
         engine.tick.assert_called_once()
 
     def test_skip_path_is_forwarded(self):
-        opts = prompt_hook._forwarded_options(_args(skip_path=["~/orca", "/tmp/x"]))
+        opts = prompt_hook._forwarded_options(
+            _args(rotate=None, no_detach_orca=False, min_interval=0, skip_path=["~/orca", "/tmp/x"])
+        )
         # ~ is quoted: the hook expands it itself, so the shell must not.
         assert opts == ["'--skip-path=~/orca'", "--skip-path=/tmp/x"]
 
@@ -739,18 +745,18 @@ class TestKeepOrcaDetached(TestRunHook):
         with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
              patch("claude_swap.orca.keep_detached", side_effect=lambda: order.append("detach")), \
              patch.object(prompt_hook, "_read_payload", return_value={}):
-            prompt_hook.run_hook(_args(rotate="best", min_interval=0, detach_orca=True))
+            prompt_hook.run_hook(_args(rotate="best", min_interval=0, no_detach_orca=False))
         assert order == ["detach", "switch"]
 
     def test_old_sync_orca_flag_now_detaches(self, backup_dir):
         with patch("claude_swap.orca.keep_detached", return_value=None) as keep:
             self._run(
-                backup_dir, [], args=_args(rotate="best", min_interval=0, sync_orca=True),
+                backup_dir, [], args=_args(rotate="best", min_interval=0, no_detach_orca=False),
                 switch_result={"switched": False},
             )
         keep.assert_called_once()
 
-    def test_no_orca_contact_without_the_flag(self, backup_dir):
+    def test_no_orca_contact_with_no_detach_orca(self, backup_dir):
         with patch("claude_swap.orca.keep_detached") as keep:
             self._run(
                 backup_dir, [], args=_args(rotate="best", min_interval=0),
@@ -761,7 +767,7 @@ class TestKeepOrcaDetached(TestRunHook):
     def test_detach_is_reported_even_without_a_switch(self, backup_dir, capsys):
         with patch("claude_swap.orca.keep_detached", return_value="Orca detached from the Claude login"):
             self._run(
-                backup_dir, [], args=_args(rotate="best", min_interval=0, detach_orca=True),
+                backup_dir, [], args=_args(rotate="best", min_interval=0, no_detach_orca=False),
                 switch_result={"switched": False},
             )
         assert "Orca detached" in json.loads(capsys.readouterr().out)["systemMessage"]
@@ -769,7 +775,7 @@ class TestKeepOrcaDetached(TestRunHook):
     def test_detach_failure_never_breaks_the_prompt(self, backup_dir, capsys):
         with patch("claude_swap.orca.keep_detached", side_effect=RuntimeError("boom")):
             code, _, _ = self._run(
-                backup_dir, [], args=_args(rotate="best", min_interval=0, detach_orca=True),
+                backup_dir, [], args=_args(rotate="best", min_interval=0, no_detach_orca=False),
                 switch_result={"switched": True, "message": "Switched to Account-2 (b@e)"},
             )
         assert code == 0
@@ -783,9 +789,11 @@ class TestKeepOrcaDetached(TestRunHook):
         )
         assert "re-login" in json.loads(capsys.readouterr().out)["systemMessage"]
 
-    def test_both_flags_forward_as_detach(self):
-        assert prompt_hook._forwarded_options(_args(sync_orca=True)) == ["--detach-orca"]
-        assert prompt_hook._forwarded_options(_args(detach_orca=True)) == ["--detach-orca"]
+    def test_detach_is_the_default_and_not_written(self):
+        base = dict(rotate=None, min_interval=0, no_detach_orca=False)
+        assert prompt_hook._forwarded_options(_args(**base)) == []
+        assert prompt_hook._forwarded_options(_args(**base, sync_orca=True)) == []
+        assert prompt_hook._forwarded_options(_args(**{**base, "no_detach_orca": True})) == ["--no-detach-orca"]
 
 
 def test_bad_flag_on_run_path_does_not_block_prompt():

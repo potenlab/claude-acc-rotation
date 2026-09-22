@@ -10,7 +10,14 @@ One command installs cswap, turns on the [per-prompt hook](#check-on-every-promp
 curl -fsSL https://raw.githubusercontent.com/potenlab/claude-acc-rotation/main/install.sh | sh
 ```
 
-Pass hook options after `sh -s --`, e.g. `... | sh -s -- --threshold 80`. Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`.
+No flags or config needed — out of the box, every prompt:
+
+- checks the current account and **stays on it while it has more than 15% left**;
+- at its limit, moves to the account with the most room (never onto one near its limit, with a dead login, or disabled);
+- on a session's first prompt, confirms with the server that your login still works, and moves off it if it was revoked;
+- keeps the Orca app from overwriting the login, if you use Orca.
+
+Then add each of your other accounts: `/login` with it in Claude Code, and run `cswap add`. (After a later `/login` with an account cswap already knows, the next prompt saves it by itself.)
 
 To uninstall, which **keeps your saved accounts** so a reinstall brings rotation straight back:
 
@@ -206,7 +213,7 @@ cswap hook uninstall                    # remove it (other hooks are left alone)
 `--rotate` checks the current account on every prompt, and **only switches when it has to**:
 
 ```bash
-cswap hook install --rotate --detach-orca    # recommended
+cswap hook install                           # the default: no flags needed
 ```
 
 - Current account has more than 15% left (`hook.reserve`) → stay. No switch, no message.
@@ -266,7 +273,7 @@ cswap run 2
 ```bash
 cswap orca status       # is Orca managing the Claude login?
 cswap orca detach       # stop it; Orca's terminals keep working
-cswap hook install --rotate --detach-orca   # and re-detach it on every prompt
+cswap hook install      # keeps it detached on every prompt (the default)
 ```
 
 Detaching is Orca's own "system default" setting: it keeps its account list, but stops overwriting the login. With `--detach-orca` the hook re-detaches it on the next prompt if someone picks an account in Orca's menu. This uses Orca's local runtime socket (`accounts.selectClaude`), which is **undocumented** — an Orca update could change it, and every failure is a silent skip. (`--sync-orca`, the earlier flag that pointed Orca at cswap's account, turned out to keep both tools writing; it now behaves as `--detach-orca`.)

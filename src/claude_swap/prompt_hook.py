@@ -36,7 +36,9 @@ HOOK_TIMEOUT_SECONDS = 30
 DEFAULT_MIN_INTERVAL = 20.0
 # --rotate never lands on an account with less than this much quota left: one
 # at 98% would hit its limit on the very next message.
-DEFAULT_RESERVE = 5.0
+DEFAULT_RESERVE = 15.0
+# What a bare `cswap hook` does: check every prompt, switch only at the limit.
+DEFAULT_MODE = "on-limit"
 STAMP_FILENAME = "prompt_hook_last_run"
 SESSIONS_FILENAME = "prompt_hook_sessions.json"
 _SESSIONS_KEPT = 200
@@ -228,7 +230,7 @@ def _keep_orca_detached(args: argparse.Namespace) -> str | None:
     prompt, and ``--sync-orca`` in a command an open session captured earlier
     now gets this safe behaviour too.
     """
-    if not (args.detach_orca or args.sync_orca):
+    if getattr(args, "no_detach_orca", False):
         return None
     try:
         from claude_swap import orca
@@ -247,6 +249,11 @@ def _system_message(events: list) -> str | None:
         if event.kind == "all-exhausted":
             return f"cswap: {event.human()}"
     return None
+
+
+def _mode(args: argparse.Namespace) -> str:
+    """The switching mode: --rotate if given, else the built-in default."""
+    return args.rotate or DEFAULT_MODE
 
 
 def _models(args: argparse.Namespace, switcher) -> tuple[str, ...]:
@@ -407,12 +414,13 @@ def run_hook(args: argparse.Namespace) -> int:
             healed = _heal_current_account(switcher)
             if healed:
                 notes.append(healed)
-            if args.rotate:
+            mode = _mode(args)
+            if mode != "threshold":
                 message = (
-                    f"cswap: [dry-run] would rotate ({args.rotate})"
+                    f"cswap: [dry-run] would rotate ({mode})"
                     if args.dry_run
                     else _rotate(
-                        switcher, args.rotate, _reserve(args, switcher),
+                        switcher, mode, _reserve(args, switcher),
                         _models(args, switcher),
                     )
                 )
@@ -582,9 +590,15 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--detach-orca",
         action="store_true",
+        help=argparse.SUPPRESS,  # the default now; kept so old commands parse
+    )
+    parser.add_argument(
+        "--no-detach-orca",
+        action="store_true",
         help=(
-            "Keep the Orca app from managing the Claude login, so the two "
-            "never overwrite each other's tokens (checked on every prompt)"
+            "Let the Orca app manage the Claude login too. By default cswap "
+            "keeps Orca detached so the two never overwrite each other's "
+            "tokens (a no-op when Orca isn't running)"
         ),
     )
     parser.add_argument(
@@ -607,14 +621,16 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
         "--rotate",
         nargs="?",
         const="on-limit",
-        choices=("on-limit", "next-available", "best", "plain"),
+        choices=("on-limit", "next-available", "best", "plain", "threshold"),
         default=None,
         help=(
-            "Check on EVERY prompt. 'on-limit' (default) stays on the current "
+            "How to switch (default: on-limit, no flag needed). "
+            "Check on EVERY prompt. 'on-limit' stays on the current "
             "account while it has more than --reserve left and only then moves "
             "to the account with the most room; 'next-available' rotates every "
             "prompt, skipping limited accounts; 'best' takes the most quota "
-            "left; 'plain' rotates blindly. Implies --min-interval 0"
+            "left; 'plain' rotates blindly; 'threshold' is the auto-switch "
+            "engine (switch near autoswitch.threshold, with cooldown)"
         ),
     )
     parser.add_argument(
@@ -624,9 +640,8 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
         metavar="PCT",
         help=(
             "With --rotate: skip any account with less than this much quota "
-            f"left until its window resets (default: hook.reserve, or "
-            f"{DEFAULT_RESERVE:g}). Set it with 'cswap config set hook.reserve 15' "
-            "to change already-open sessions too"
+            f"left until its window resets (default {DEFAULT_RESERVE:g}; "
+            "'cswap config set hook.reserve N' also changes open sessions)"
         ),
     )
     parser.add_argument(
@@ -643,7 +658,7 @@ def _add_tick_options(parser: argparse.ArgumentParser) -> None:
 
 def _default_min_interval(args: argparse.Namespace) -> float:
     """Rotate-every-prompt means exactly that: no throttle unless asked for."""
-    return 0.0 if args.rotate else DEFAULT_MIN_INTERVAL
+    return DEFAULT_MIN_INTERVAL if _mode(args) == "threshold" else 0.0
 
 
 def _resolve_min_interval(args: argparse.Namespace) -> None:
@@ -665,17 +680,17 @@ def _forwarded_options(args: argparse.Namespace) -> list[str]:
         ("--strategy", args.strategy),
         ("--model", args.model),
         ("--cooldown", args.cooldown),
-        ("--rotate", args.rotate),
+        ("--rotate", args.rotate if args.rotate != DEFAULT_MODE else None),
     ):
         if value is not None:
             # `--flag=value` so a value starting with "-" can't be misparsed.
             out.append(shlex.quote(f"{flag}={_format_value(value)}"))
     if args.min_interval != _default_min_interval(args):
         out.append(f"--min-interval={_format_value(args.min_interval)}")
-    if args.rotate and args.reserve is not None:
+    if _mode(args) != "threshold" and args.reserve is not None:
         out.append(f"--reserve={_format_value(args.reserve)}")
-    if args.detach_orca or args.sync_orca:
-        out.append("--detach-orca")
+    if getattr(args, "no_detach_orca", False):
+        out.append("--no-detach-orca")
     for path in args.skip_path:
         out.append(shlex.quote(f"--skip-path={path}"))
     if args.quiet:
