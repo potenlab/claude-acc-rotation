@@ -60,6 +60,23 @@ _TIMEOUT = 5.0
 _SECURITY = "/usr/bin/security"
 
 
+def locked_hint() -> str:
+    """What to run when the login Keychain reads as locked.
+
+    Over SSH the login Keychain is locked even while the Mac's own desktop
+    session has it open, so "retry from a GUI terminal" alone is no help to
+    someone who only has SSH. Unlocking it in the SSH session works.
+    """
+    cmd = f"{_SECURITY} unlock-keychain ~/Library/Keychains/login.keychain-db"
+    if os.environ.get("SSH_CONNECTION"):
+        return (
+            f"You are on SSH, where the Keychain stays locked: run `{cmd}` and "
+            f"retry. The unlock covers only the SSH login it ran in, so restart "
+            f"Claude Code from that shell if it was started elsewhere."
+        )
+    return f"Unlock it (`{cmd}`) or retry from a GUI terminal."
+
+
 class KeychainError(Exception):
     """A ``security`` invocation failed for a reason other than "not found"."""
 

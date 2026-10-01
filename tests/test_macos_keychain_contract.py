@@ -1200,3 +1200,73 @@ class TestOurOwnFileModeIsNotAKeychainFailure:
         with pytest.raises(SwitchError) as exc:
             s._perform_switch("2", emit_output=False, force_activate=True)
         assert "has no stored credentials" in str(exc.value), exc.value
+
+
+class TestNoSwitchOverALockedKeychain:
+    """Over SSH/mosh the login Keychain reads as locked. A switch there runs on
+    the plaintext fallback: it files that possibly consumed generation as the
+    outgoing account's backup and activates the target in the plaintext file
+    only, which logs accounts out later. The switch must refuse instead."""
+
+    @staticmethod
+    def _lock(monkeypatch, store):
+        import json
+
+        from claude_swap import macos_keychain as _kc
+        from claude_swap.paths import get_credentials_path
+
+        store._keychain_usable_cache = True
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+        def locked(*_a, **_kw):
+            raise _kc.KeychainError("locked")
+
+        for fn in ("get_password", "set_password", "delete_password"):
+            monkeypatch.setattr(_kc, fn, locked)
+        path = get_credentials_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"claudeAiOauth": {"accessToken": "sk-maybe-spent"}}))
+        return path
+
+    def test_perform_switch_refuses_before_touching_anything(
+        self, macos_switcher, monkeypatch
+    ):
+        from claude_swap.exceptions import SwitchError
+
+        path = self._lock(monkeypatch, macos_switcher._store)
+        before = path.read_text()
+        with pytest.raises(SwitchError) as exc:
+            macos_switcher._perform_switch("2", emit_output=False)
+        assert "Keychain is unreadable" in str(exc.value), exc.value
+        assert path.read_text() == before
+
+    def test_the_refusal_names_the_unlock_command_over_ssh(
+        self, macos_switcher, monkeypatch
+    ):
+        from claude_swap.exceptions import SwitchError
+
+        self._lock(monkeypatch, macos_switcher._store)
+        monkeypatch.setenv("SSH_CONNECTION", "10.0.0.1 1 10.0.0.2 22")
+        with pytest.raises(SwitchError) as exc:
+            macos_switcher._refuse_locked_keychain_switch()
+        assert "unlock-keychain" in str(exc.value), exc.value
+
+    def test_a_readable_keychain_is_not_refused(self, macos_switcher, monkeypatch):
+        from claude_swap.credentials import ActiveCredentials
+
+        monkeypatch.setattr(
+            macos_switcher, "_read_active_credentials",
+            lambda: ActiveCredentials('{"claudeAiOauth": {}}', False, False),
+        )
+        macos_switcher._refuse_locked_keychain_switch()  # no raise
+
+    def test_a_latched_process_is_told_to_restart(self, macos_switcher, monkeypatch):
+        from claude_swap.credentials import ActiveCredentials
+        from claude_swap.exceptions import SwitchError
+
+        macos_switcher._store._residual_verdict = False
+        with pytest.raises(SwitchError) as exc:
+            macos_switcher._refuse_locked_keychain_switch(
+                ActiveCredentials('{"claudeAiOauth": {}}', False, True)
+            )
+        assert "restart it" in str(exc.value), exc.value

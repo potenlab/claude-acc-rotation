@@ -147,6 +147,38 @@ class TestRender:
         assert not (backup / statusline.LAST_SWITCH_FILENAME).exists()
 
 
+class TestReserveFollowsTheHook:
+    """The line must hold out exactly what rotation holds out."""
+
+    def test_setting_is_used(self, env, monkeypatch):
+        backup, _ = env
+        monkeypatch.setattr(statusline.paths, "get_backup_root", lambda: backup)
+        (backup / "settings.json").write_text(json.dumps({"hook": {"reserve": 3}}))
+        assert statusline.reserve() == 3.0
+
+    def test_flag_on_the_installed_command_wins(self, env, monkeypatch):
+        backup, config = env
+        monkeypatch.setattr(statusline.paths, "get_backup_root", lambda: backup)
+        (backup / "settings.json").write_text(json.dumps({"hook": {"reserve": 3}}))
+        from claude_swap import prompt_hook
+
+        prompt_hook.install(config / "settings.json", '"/bin/cswap" hook --reserve=7')
+        assert statusline.reserve() == 7.0
+
+    def test_default_when_nothing_is_set(self, env, monkeypatch):
+        backup, _ = env
+        monkeypatch.setattr(statusline.paths, "get_backup_root", lambda: backup)
+        assert statusline.reserve() == statusline.DEFAULT_RESERVE
+
+    def test_a_3pct_reserve_keeps_a_nearly_full_account_in_play(self, env, monkeypatch):
+        backup, _ = env
+        monkeypatch.setattr(statusline.paths, "get_backup_root", lambda: backup)
+        usage(backup, {"1": (26, 50), "2": (90, 10), "3": (95, 20)})  # #2: 10% left, #3: 5%
+        assert "→ none free" in statusline.render({}, backup, colour=False)  # both held out at 15%
+        (backup / "settings.json").write_text(json.dumps({"hook": {"reserve": 3}}))
+        assert "→ Account-2" in statusline.render({}, backup, colour=False)  # 10% left now counts
+
+
 class TestNextFollowsTheMode:
     def _seq(self):
         return {"sequence": [1, 2, 3, 4], "accounts": {n: {"email": f"{n}@e"} for n in "1234"}}

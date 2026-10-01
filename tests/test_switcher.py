@@ -12596,3 +12596,49 @@ class TestSessionShellGuardCoversEveryMutator:
         s = self._switcher(sample_sequence_data, monkeypatch)
         with pytest.raises(SwitchError):
             s.unset_alias("2")
+
+
+class TestKeychainLocksMidSwitch:
+    """The guard at the top of ``_perform_switch`` passes on a readable
+    Keychain; the read the outgoing backup is filed from comes back degraded
+    (auto-lock on sleep/idle, or an SSH session). That read must be refused
+    before anything is written, not filed as the backup."""
+
+    _setup_two_accounts = TestPerformSwitchPostDisplay._setup_two_accounts
+    _install_store_patches = staticmethod(
+        TestPerformSwitchPostDisplay._install_store_patches
+    )
+
+    def test_degraded_in_lock_read_is_refused(
+        self, temp_home, mock_claude_config, sample_sequence_data
+    ):
+        from claude_swap.credentials import ActiveCredentials
+        from claude_swap.exceptions import SwitchError
+
+        switcher, creds_store, configs_store = self._setup_two_accounts(
+            temp_home, sample_sequence_data
+        )
+        live = json.dumps({"claudeAiOauth": {"accessToken": "sk-live-1"}})
+        live_state = {"creds": live}
+        patches = self._install_store_patches(
+            switcher, creds_store, configs_store, live_state
+        )
+        backups_before = dict(creds_store)
+
+        def degraded_read():
+            switcher._store._last_active_read = ActiveCredentials(live, False, True)
+            return live
+
+        try:
+            with patch.object(
+                switcher, "_read_active_credentials",
+                return_value=ActiveCredentials(live, False, False),
+            ), patch.object(switcher, "_read_credentials", side_effect=degraded_read):
+                with pytest.raises(SwitchError) as exc:
+                    switcher._perform_switch("2", emit_output=False)
+        finally:
+            for p in patches:
+                p.stop()
+        assert "Keychain is unreadable" in str(exc.value)
+        assert creds_store == backups_before
+        assert live_state["creds"] == live

@@ -11,6 +11,22 @@ import pytest
 
 from claude_swap import prompt_hook
 from claude_swap.autoswitch import AllExhaustedEvent, NoSwitchEvent, SwitchEvent
+from claude_swap.credentials import ActiveCredentials
+
+
+@pytest.fixture(autouse=True)
+def _keychain_readable(request, monkeypatch):
+    """MagicMock switchers answer every attribute truthily, which the hook
+    would read as a locked Keychain. Tests of the locked path opt out.
+
+    Also drops a CSWAP_HOOK_DISABLE inherited from the developer's shell (set
+    there for SSH sessions with a locked Keychain), which turns the hook off."""
+    monkeypatch.delenv("CSWAP_HOOK_DISABLE", raising=False)
+    if request.node.get_closest_marker("keychain_locked"):
+        yield
+        return
+    with patch.object(prompt_hook, "_keychain_locked", return_value=False):
+        yield
 
 
 def _args(**overrides) -> argparse.Namespace:
@@ -840,3 +856,80 @@ def test_cli_dispatches_hook(monkeypatch):
     with patch("claude_swap.prompt_hook.hook_command_main") as main:
         cli.main()
     main.assert_called_once_with(["status"])
+
+
+@pytest.mark.keychain_locked
+class TestLockedKeychain:
+    """SSH/mosh sessions read a locked Keychain: never rotate there."""
+
+    @pytest.fixture
+    def backup_dir(self, tmp_path: Path) -> Path:
+        return tmp_path / "backup"
+
+    def _locked(self, degraded=True, unavailable=False):
+        return ActiveCredentials('{"claudeAiOauth": {}}', unavailable, degraded)
+
+    def _run_locked(self, backup_dir, active, args=None, env=None):
+        switcher = MagicMock()
+        switcher.backup_dir = backup_dir
+        switcher.current_account_number.return_value = "3"
+        switcher._read_active_credentials.return_value = active
+        switcher.switch.return_value = None
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        with patch("claude_swap.switcher.ClaudeAccountSwitcher", return_value=switcher), \
+             patch("claude_swap.autoswitch.AutoSwitchEngine") as engine_cls, \
+             patch.dict("os.environ", env or {}, clear=False), \
+             patch.object(prompt_hook, "_ensure_usable_login", return_value=None) as first, \
+             patch.object(prompt_hook, "_heal_current_account", return_value=None) as heal, \
+             patch.object(prompt_hook, "_read_payload", return_value={"session_id": "s1"}):
+            code = prompt_hook.run_hook(args or _args(rotate="next-available", min_interval=0))
+        return code, switcher, engine_cls, first, heal
+
+    def test_degraded_read_skips_rotation(self, backup_dir, capsys):
+        code, switcher, engine_cls, first, heal = self._run_locked(
+            backup_dir, self._locked()
+        )
+        assert code == 0
+        switcher.switch.assert_not_called()
+        switcher.switch_to.assert_not_called()
+        engine_cls.assert_not_called()
+        first.assert_not_called()
+        heal.assert_not_called()
+        msg = json.loads(capsys.readouterr().out)["systemMessage"]
+        assert "Keychain is locked" in msg and "Account-3" in msg
+
+    def test_unavailable_keychain_skips_rotation(self, backup_dir, capsys):
+        _, switcher, _, _, _ = self._run_locked(
+            backup_dir, ActiveCredentials("", True, False)
+        )
+        switcher.switch.assert_not_called()
+
+    def test_threshold_mode_skips_the_engine(self, backup_dir, capsys):
+        _, switcher, engine_cls, _, _ = self._run_locked(
+            backup_dir, self._locked(), args=_args(min_interval=0)
+        )
+        engine_cls.assert_not_called()
+
+    def test_notice_is_not_repeated_every_prompt(self, backup_dir, capsys):
+        self._run_locked(backup_dir, self._locked())
+        assert "Keychain is locked" in capsys.readouterr().out
+        self._run_locked(backup_dir, self._locked())
+        assert capsys.readouterr().out == ""
+
+    def test_ssh_notice_names_the_unlock_command(self, backup_dir, capsys):
+        self._run_locked(
+            backup_dir, self._locked(), env={"SSH_CONNECTION": "10.0.0.1 1 10.0.0.2 22"}
+        )
+        msg = json.loads(capsys.readouterr().out)["systemMessage"]
+        assert "unlock-keychain" in msg and "restart Claude Code" in msg
+
+    def test_readable_keychain_still_rotates(self, backup_dir):
+        _, switcher, _, _, _ = self._run_locked(
+            backup_dir, ActiveCredentials('{"claudeAiOauth": {}}', False, False)
+        )
+        switcher.switch.assert_called_once()
+
+    def test_read_error_does_not_block_rotation(self, backup_dir):
+        switcher = MagicMock()
+        switcher._read_active_credentials.side_effect = RuntimeError("boom")
+        assert prompt_hook._keychain_locked(switcher) is False

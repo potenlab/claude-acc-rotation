@@ -875,7 +875,7 @@ class SessionManager:
                 raise SessionError(
                     f"Account-{account_num}'s backup is in the macOS Keychain "
                     f"but it is unreadable right now (locked or no GUI "
-                    f"session). Retry from a GUI terminal; do not re-add."
+                    f"session). {macos_keychain.locked_hint()} Do not re-add."
                 )
             raise SessionError(
                 f"Account-{account_num} has no stored credentials. "

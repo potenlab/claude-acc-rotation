@@ -33,7 +33,7 @@ from claude_swap import paths
 PREVIOUS_FILENAME = "statusline_previous.json"
 LAST_SWITCH_FILENAME = "last_switch.json"
 SWITCH_NOTE_SECONDS = 300  # "↻ from Account-4" shows this long after a switch
-RESERVE = 15.0  # matches the hook's default: at or below this, "at its limit"
+DEFAULT_RESERVE = 15.0  # only a fallback; the hook's own setting wins
 _CHAINED_TIMEOUT = 1.5
 
 _DIM = "\033[2m"
@@ -99,6 +99,25 @@ def _headroom(five: float | None, seven: float | None) -> float | None:
     return 100.0 - max(known) if known else None
 
 
+def reserve() -> float:
+    """The hook's reserve, so the line holds out exactly what rotation does.
+
+    ``--reserve=N`` on the installed command wins, else ``hook.reserve``.
+    """
+    try:
+        import shlex
+
+        from claude_swap.prompt_hook import claude_settings_path, installed_command
+        from claude_swap.settings import load_hook_settings
+
+        for arg in shlex.split(installed_command(claude_settings_path()) or ""):
+            if arg.startswith("--reserve="):
+                return float(arg.split("=", 1)[1])
+        return load_hook_settings(paths.get_backup_root()).reserve
+    except Exception:
+        return DEFAULT_RESERVE
+
+
 def hook_mode() -> str:
     """The installed hook's switching mode (``--rotate=X``, else the default)."""
     try:
@@ -116,7 +135,8 @@ def hook_mode() -> str:
 
 
 def _next_account(
-    sequence: dict, usage: dict, current: str | None, mode: str = "next-available"
+    sequence: dict, usage: dict, current: str | None, mode: str = "next-available",
+    hold: float = DEFAULT_RESERVE,
 ) -> str | None:
     """The account the hook would move to next.
 
@@ -134,7 +154,7 @@ def _next_account(
             continue
         five, seven, dead = _cached_windows(usage, num)
         room = _headroom(five, seven)
-        if dead or room is None or room <= RESERVE:
+        if dead or room is None or room <= hold:
             continue
         if mode in ("next-available", "plain"):
             return num
@@ -152,7 +172,7 @@ def _parse_ts(value: object) -> float | None:
         return None
 
 
-def _frees_at(usage: dict, num: str) -> float | None:
+def _frees_at(usage: dict, num: str, hold: float = DEFAULT_RESERVE) -> float | None:
     """When a held-out account gets back above the reserve (its binding resets)."""
     entry = (usage.get("accounts") or {}).get(num)
     good = entry.get("lastGood") if isinstance(entry, dict) else None
@@ -162,7 +182,7 @@ def _frees_at(usage: dict, num: str) -> float | None:
     for key in ("five_hour", "seven_day"):
         window = good.get(key)
         pct = _pct(window)
-        if pct is not None and pct >= 100 - RESERVE:
+        if pct is not None and pct >= 100 - hold:
             ts = _parse_ts(window.get("resets_at")) if isinstance(window, dict) else None
             if ts is None:
                 return None
@@ -170,7 +190,9 @@ def _frees_at(usage: dict, num: str) -> float | None:
     return max(times) if times else None
 
 
-def _soonest_free(sequence: dict, usage: dict, current: str, now: float) -> tuple[str, float] | None:
+def _soonest_free(
+    sequence: dict, usage: dict, current: str, now: float, hold: float = DEFAULT_RESERVE
+) -> tuple[str, float] | None:
     """The held-out account that gets room back first, and when."""
     best = None
     for raw in sequence.get("sequence") or []:
@@ -178,7 +200,7 @@ def _soonest_free(sequence: dict, usage: dict, current: str, now: float) -> tupl
         record = (sequence.get("accounts") or {}).get(num) or {}
         if num == current or record.get("disabled") or _cached_windows(usage, num)[2]:
             continue
-        at = _frees_at(usage, num)
+        at = _frees_at(usage, num, hold)
         if at is not None and at > now and (best is None or at < best[1]):
             best = (num, at)
     return best
@@ -205,19 +227,19 @@ def _countdown(seconds: float) -> str:
     return f"{mins}m"
 
 
-def _colour(pct: float | None) -> str:
+def _colour(pct: float | None, hold: float = DEFAULT_RESERVE) -> str:
     if pct is None:
         return _DIM
-    if pct >= 100 - RESERVE:
+    if pct >= 100 - hold:
         return _RED
     if pct >= 60:
         return _YELLOW
     return _GREEN
 
 
-def _fmt(label: str, pct: float | None, colour: bool) -> str:
+def _fmt(label: str, pct: float | None, colour: bool, hold: float = DEFAULT_RESERVE) -> str:
     text = f"{label} {pct:.0f}%" if pct is not None else f"{label} ?"
-    return f"{_colour(pct)}{text}{_RESET}" if colour else text
+    return f"{_colour(pct, hold)}{text}{_RESET}" if colour else text
 
 
 # -- the line -------------------------------------------------------------------
@@ -238,6 +260,7 @@ def render(payload: dict, backup_dir: Path, now: float | None = None, colour: bo
         who = f"{email} (not in cswap)" if email else "no login"
         return f"⇄ {who}"
 
+    hold = reserve()
     five, seven = _windows_from_payload(payload)
     if five is None and seven is None:
         five, seven, _dead = _cached_windows(usage, current)
@@ -245,14 +268,14 @@ def render(payload: dict, backup_dir: Path, now: float | None = None, colour: bo
     name = f"Account-{current}"
     parts = [
         (f"{_BOLD}⇄ {name}{_RESET} {email}" if colour else f"⇄ {name} {email}"),
-        _fmt("5h", five, colour),
-        _fmt("7d", seven, colour),
+        _fmt("5h", five, colour, hold),
+        _fmt("7d", seven, colour, hold),
     ]
     def paint(text: str, code: str) -> str:
         return f"{code}{text}{_RESET}" if colour else text
 
     if len(accounts) > 1:
-        nxt = _next_account(sequence, usage, current, hook_mode())
+        nxt = _next_account(sequence, usage, current, hook_mode(), hold)
         if nxt:
             n5, n7, _ = _cached_windows(usage, nxt)
             left = _headroom(n5, n7)
@@ -260,7 +283,7 @@ def render(payload: dict, backup_dir: Path, now: float | None = None, colour: bo
             room_text = f" ({left:.0f}% left)" if left is not None else ""
             parts.append(paint(f"→ Account-{nxt} {who}{room_text}".replace("  ", " "), _CYAN))
         else:
-            soon = _soonest_free(sequence, usage, current, now)
+            soon = _soonest_free(sequence, usage, current, now, hold)
             text = "→ none free"
             if soon:
                 text += f", Account-{soon[0]} in {_countdown(soon[1] - now)}"

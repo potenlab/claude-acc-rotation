@@ -334,6 +334,7 @@ class CredentialStore:
         # superseded generation. A fact about THIS item, which is why neither
         # flag above can stand in for it.
         self._residual_verdict: bool | None = None
+        self._last_active_read: ActiveCredentials | None = None
         self._last_active_credentials_backend: str | None = None
 
     def _kc_call(self, fn, *args):
@@ -507,7 +508,11 @@ class CredentialStore:
         ``str | None`` contract the switch paths rely on: credential string if
         found, ``""`` if not found, ``None`` on a file read error.
         """
-        return self._read_active_credentials().value
+        active = self._read_active_credentials()
+        # Kept so a caller can check the verdict of THIS read without reading
+        # again (a second read can disagree; see _perform_switch).
+        self._last_active_read = active
+        return active.value
 
     def _read_active_oauth_keychain(self) -> tuple[str | None, bool]:
         """Read the active profile's OAuth Keychain item(s).

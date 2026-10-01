@@ -231,7 +231,7 @@ By default every prompt **moves to the next account that still has room**, so th
 cswap hook install                           # the default: no flags needed
 ```
 
-- Accounts with 15% or less left (`hook.reserve`), a dead login, or disabled are skipped, and come back once they recover.
+- Accounts with 15% or less left (`hook.reserve`), a dead login, or disabled are skipped, and come back once they recover. Lower the margin to use more of each account before moving on — `cswap config set hook.reserve 3` takes effect in open sessions too, and the status line follows it.
 - If no other account has room, it stays on the current one and says so.
 
 The trade-off: every switch makes the next message rebuild its conversation cache (extra tokens), and on macOS a switch takes ~30 s to reach running sessions, so prompts sent faster than that may still land on the previous account. The login is shared by the whole machine, so this spreads usage **over time**; to run two sessions on two accounts at once, use [`cswap run`](#run-multiple-accounts-at-the-same-time-session-mode). Other modes:

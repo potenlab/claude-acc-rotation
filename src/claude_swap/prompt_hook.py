@@ -382,6 +382,25 @@ def _rotate(switcher, strategy: str, reserve: float = DEFAULT_RESERVE, models: t
     return None
 
 
+def _keychain_locked(switcher) -> bool:
+    """Whether this session reads the login from a locked/unreadable Keychain."""
+    try:
+        active = switcher._read_active_credentials()
+    except Exception:
+        return False
+    return bool(active.degraded or active.keychain_unavailable)
+
+
+def _locked_notice(current) -> str:
+    from claude_swap.macos_keychain import locked_hint
+
+    here = f"Account-{current}" if current else "the current account"
+    return (
+        f"Keychain is locked in this session — staying on {here}, not "
+        f"rotating. {locked_hint()}"
+    )
+
+
 def _fresh_notice(backup_dir: Path, message: str, now: float | None = None) -> bool:
     """True unless this exact notice was shown within NOTICE_REPEAT_SECONDS."""
     now = time.time() if now is None else now
@@ -430,6 +449,16 @@ def run_hook(args: argparse.Namespace) -> int:
         orca_note = _keep_orca_detached(args)
         if orca_note:
             notes.append(orca_note)
+
+        # A session that can't read the Keychain (SSH/mosh) would switch on a
+        # possibly stale plaintext login and log accounts out: stay put.
+        if _keychain_locked(switcher):
+            locked = _locked_notice(before)
+            if _fresh_notice(switcher.backup_dir, locked):
+                notes.append(locked)
+            if notes and not args.quiet:
+                print(json.dumps({"systemMessage": "cswap: " + " · ".join(notes)}), flush=True)
+            return 0
 
         # First prompt of a session, before the throttle can skip it: never let
         # it go out on a revoked login.

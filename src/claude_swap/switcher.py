@@ -311,7 +311,17 @@ def _sweep_legacy_keyring(usernames: list[str], removed_items: list[str]) -> Non
         pass  # keyring unavailable — nothing to clean up
 
 
-
+def _ssh_login_hint() -> str:
+    """Why a /login over SSH leaves the old account's token in the Keychain."""
+    if sys.platform != "darwin" or not os.environ.get("SSH_CONNECTION"):
+        return ""
+    return (
+        " You are on SSH: a /login made while the Keychain was locked saves "
+        "the new login only to ~/.claude/.credentials.json and leaves the "
+        "previous account in the Keychain. Run `/usr/bin/security "
+        "unlock-keychain ~/Library/Keychains/login.keychain-db`, /login "
+        "again, then re-run."
+    )
 
 
 class ClaudeAccountSwitcher:
@@ -663,10 +673,39 @@ class ClaudeAccountSwitcher:
                 "The macOS Keychain is unreadable right now (locked or no GUI "
                 "session), so the only readable credential is a plaintext "
                 "fallback that may be a superseded generation — capturing it "
-                "would file a spent refresh token against this slot. Retry "
-                "from a GUI terminal."
+                "would file a spent refresh token against this slot. "
+                + macos_keychain.locked_hint()
             )
         return active.value
+
+    def _refuse_locked_keychain_switch(self, active=None) -> None:
+        """Refuse to switch while this process cannot read the Keychain.
+
+        Over SSH/mosh the login Keychain reads as locked, and a switch there
+        runs on the plaintext fallback: it files that possibly superseded
+        generation as the outgoing account's backup (a spent refresh token that
+        logs the account out on its next use), and activates the target in the
+        plaintext file only, leaving the Keychain — which GUI sessions read
+        first — on the old account. Staying put is always safe.
+        """
+        if active is None:
+            active = self._read_active_credentials()
+        if not (active.degraded or active.keychain_unavailable):
+            return
+        if getattr(self._store, "_residual_verdict", None) is False:
+            # Latched inside this process by an earlier failed Keychain
+            # cleanup; unlocking cannot clear it, a new process does.
+            hint = (
+                "This cswap process could not clean up the Keychain earlier; "
+                "restart it (menu bar / dashboard) or retry from a new shell."
+            )
+        else:
+            hint = macos_keychain.locked_hint()
+        raise SwitchError(
+            "The macOS Keychain is unreadable in this session (locked or no "
+            "GUI session); not switching, because the only readable login "
+            "is a plaintext copy that may be stale. " + hint
+        )
 
     def _read_capture_credentials(self) -> str | None:
         """Read the credential of the profile the environment points at.
@@ -3270,7 +3309,7 @@ class ClaudeAccountSwitcher:
                     f"one account while the credential store still holds "
                     f"another's token (e.g. a renamed .claude.json over a live "
                     f"keychain item). Log in as {email} in THIS environment, "
-                    f"then re-run."
+                    f"then re-run.{_ssh_login_hint()}"
                 )
         else:
             seen = (profile.get("email") or "").strip()
@@ -3284,6 +3323,7 @@ class ClaudeAccountSwitcher:
                     f"credential store still holds another's token (e.g. a "
                     f"renamed .claude.json over a live keychain item). Log in "
                     f"as {email} in THIS environment, then re-run."
+                    f"{_ssh_login_hint()}"
                 )
         resolved_org = profile.get("organizationUuid")
         if resolved_org is None:
@@ -6698,7 +6738,7 @@ class ClaudeAccountSwitcher:
             raise SwitchError(
                 f"Account-{account_num}'s backup is in the macOS Keychain "
                 f"but it is unreadable right now (locked or no GUI "
-                f"session). Retry from a GUI terminal; do not re-add."
+                f"session). {macos_keychain.locked_hint()} Do not re-add."
             )
         raise SwitchError(
             f"Account-{account_num} has no stored credentials. "
@@ -6763,6 +6803,7 @@ class ClaudeAccountSwitcher:
         from claude_swap.session import scan_live_sessions
 
         self._refuse_session_shell()
+        self._refuse_locked_keychain_switch()
         warnings_out: list[str] = []
         # Session-mode drift. Switching the default login to an account that
         # also has a live session profile puts the same refresh token in two
@@ -7049,7 +7090,15 @@ class ClaudeAccountSwitcher:
 
             # Create transaction for rollback capability
             try:
+                # Re-checked on THIS read, the one the backup is filed from:
+                # the guard at the top ran on an earlier read, and a Keychain
+                # that locks in between (sleep / idle auto-lock) would hand the
+                # plaintext fallback straight into the outgoing backup.
+                self._store._last_active_read = None
                 original_creds = self._read_credentials()
+                active = self._store._last_active_read
+                if active is not None and active.degraded:
+                    self._refuse_locked_keychain_switch(active)
                 if original_creds is None:
                     raise CredentialReadError("Failed to read current credentials")
                 if not original_creds:
